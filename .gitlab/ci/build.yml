@@ -1,0 +1,122 @@
+.main_or_develop_rules: &main_or_develop_rules
+  - if: '$CI_COMMIT_BRANCH == "main" || $CI_COMMIT_BRANCH == "develop"'
+
+.ensure_ansible_image_rules: &ensure_ansible_image_rules
+  - if: '$CI_COMMIT_BRANCH == "main" || $CI_COMMIT_BRANCH == "develop"'
+    changes:
+      - images/ansible/Dockerfile
+      - images/ansible/requirements.txt
+      - images/ansible/requirements.yml
+    variables:
+      IMAGE_REBUILD_REQUIRED: "true"
+
+  - if: '$CI_COMMIT_BRANCH == "main" || $CI_COMMIT_BRANCH == "develop"'
+    variables:
+      IMAGE_REBUILD_REQUIRED: "false"
+
+vault_login_harbor:
+  extends: .vault_login
+  stage: build
+  rules:
+    - *main_or_develop_rules
+  needs:
+    - job: ansible_deploy_harbor
+  variables:
+    VAULT_LOGIN_NAME: "Harbor"
+    VAULT_ROLE_ID: "$VAULT_HARBOR_ROLE_ID"
+    VAULT_SECRET_ID: "$VAULT_HARBOR_SECRET_ID"
+    VAULT_TOKEN_FILE: "vault_token_harbor"
+
+harbor_bootstrap_secrets:
+  stage: build
+  image:
+    name: python:3.12-slim
+    entrypoint: [""]
+  rules:
+    - *main_or_develop_rules
+  needs:
+    - job: vault_login_harbor
+      artifacts: true
+
+  script:
+    - |
+      export VAULT_TOKEN="$(cat .tmp/vault_token_harbor)"
+      pip install --no-cache-dir hvac  
+
+      python - <<'PY'
+      import os
+      from hvac import Client
+
+      client = Client(
+          url=os.environ["VAULT_ADDR"],
+          token=os.environ["VAULT_TOKEN"],
+      )
+
+      secret = client.secrets.kv.v2.read_secret_version(
+          mount_point="harbor",
+          path="images/dev",
+      )
+
+      data = secret["data"]["data"]
+
+      harbor_username = data["HARBOR_USERNAME"]
+      harbor_password = data["HARBOR_PASSWORD"]
+      harbor_registry = data["HARBOR_REGISTRY"]
+
+      print(harbor_username)
+      print(harbor_registry)
+
+      with open(".tmp/harbor_env", "w") as f:
+          f.write(f"HARBOR_USERNAME={harbor_username}\n")
+          f.write(f"HARBOR_PASSWORD={harbor_password}\n")
+          f.write(f"HARBOR_REGISTRY={harbor_registry}\n")
+
+      PY
+  artifacts:
+      paths:
+        - .tmp/harbor_env
+      expire_in: 1 hour
+
+
+ensure_ansible_image:
+  stage: build
+  image: docker:27-cli
+
+  services:
+    - name: docker:27-dind
+      alias: docker
+
+  variables:
+    DOCKER_HOST: tcp://docker:2375
+    DOCKER_TLS_CERTDIR: ""
+
+  rules: *ensure_ansible_image_rules
+
+  needs:
+    - job: harbor_bootstrap_secrets
+      artifacts: true
+
+  script:
+    - until docker info; do sleep 1; done
+    - |
+      export HARBOR_USERNAME="$(grep '^HARBOR_USERNAME=' .tmp/harbor_env | cut -d '=' -f2-)"
+      export HARBOR_PASSWORD="$(grep '^HARBOR_PASSWORD=' .tmp/harbor_env | cut -d '=' -f2-)"
+      export HARBOR_REGISTRY="$(grep '^HARBOR_REGISTRY=' .tmp/harbor_env | cut -d '=' -f2-)"
+      export IMAGE="$HARBOR_REGISTRY/devops/ansible"
+
+      printf '%s' "$HARBOR_PASSWORD" | docker login "$HARBOR_REGISTRY" \
+        --username "$HARBOR_USERNAME" \
+        --password-stdin
+
+      if [ "$IMAGE_REBUILD_REQUIRED" = "true" ] \
+        || ! docker manifest inspect "$IMAGE:latest" > /dev/null 2>&1; then
+        docker build --pull \
+          --tag "$IMAGE:$CI_COMMIT_SHORT_SHA" \
+          --tag "$IMAGE:latest" \
+          images/ansible
+
+        docker push "$IMAGE:$CI_COMMIT_SHORT_SHA"
+        docker push "$IMAGE:latest"
+      else
+        echo "The Ansible image already exists and its build context is unchanged."
+      fi

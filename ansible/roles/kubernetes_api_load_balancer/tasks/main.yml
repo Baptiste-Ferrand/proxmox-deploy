@@ -1,0 +1,80 @@
+- name: Update APT package cache
+  ansible.builtin.apt:
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: Install HAProxy and Keepalived
+  ansible.builtin.apt:
+    name:
+      - "{{ haproxy_package_name }}"
+      - "{{ keepalived_package_name }}"
+    state: present
+
+- name: Configure HAProxy for Kubernetes API TCP traffic
+  ansible.builtin.template:
+    src: haproxy.cfg.j2
+    dest: /etc/haproxy/haproxy.cfg
+    owner: root
+    group: root
+    mode: "0644"
+    validate: >-
+      {{
+        '/usr/sbin/haproxy -c -f %s'
+        if not ansible_check_mode
+        else '/usr/bin/true %s'
+      }}
+  notify: Restart HAProxy
+
+- name: Configure Keepalived VRRP unicast and API VIP
+  ansible.builtin.template:
+    src: keepalived.conf.j2
+    dest: /etc/keepalived/keepalived.conf
+    owner: root
+    group: root
+    mode: "0644"
+    validate: >-
+      {{
+        '/usr/sbin/keepalived -t -f %s'
+        if not ansible_check_mode
+        else '/usr/bin/true %s'
+      }}
+  notify: Restart Keepalived
+
+- name: Apply HAProxy and Keepalived configuration changes
+  ansible.builtin.meta: flush_handlers
+  when: not ansible_check_mode
+
+
+- name: Verify services and Kubernetes API listener
+  when: not ansible_check_mode
+  block:
+    - name: Ensure HAProxy is enabled and reload its current configuration
+      ansible.builtin.service:
+        name: "{{ haproxy_service_name }}"
+        state: reloaded
+        enabled: true
+
+    - name: Ensure Keepalived is enabled and running
+      ansible.builtin.service:
+        name: "{{ keepalived_service_name }}"
+        state: started
+        enabled: true
+
+    - name: Verify HAProxy listens on Kubernetes API port
+      ansible.builtin.command:
+        argv:
+          - ss
+          - -lntH
+          - "sport"
+          - "="
+          - ":{{ kubernetes_api_port }}"
+      changed_when: false
+      register: haproxy_listener
+
+    - name: Assert HAProxy is listening on Kubernetes API port
+      ansible.builtin.assert:
+        that:
+          - haproxy_listener.stdout | length > 0
+        fail_msg: >-
+          HAProxy is not listening on TCP port {{ kubernetes_api_port }}
+          on {{ inventory_hostname }}.

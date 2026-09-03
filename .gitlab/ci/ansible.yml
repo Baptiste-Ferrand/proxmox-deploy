@@ -1,0 +1,332 @@
+.main_or_develop_rules: &main_or_develop_rules
+  - if: '$CI_COMMIT_BRANCH == "main" || $CI_COMMIT_BRANCH == "develop"'
+
+.default_ansible_bootstrap:
+  image:
+    name: python:3.12-slim
+    entrypoint: [""]
+
+vault_login_ansible:
+  extends: .vault_login
+  variables:
+    VAULT_LOGIN_NAME: "Ansible"
+    VAULT_ROLE_ID: "$VAULT_ANSIBLE_ROLE_ID"
+    VAULT_SECRET_ID: "$VAULT_ANSIBLE_SECRET_ID"
+    VAULT_TOKEN_FILE: "vault_token_ansible"
+
+# TEMPLATE ANSIBLE FOR HARBOR
+.ansible_bootstrap_base:
+  extends: .default_ansible_bootstrap
+  before_script:
+    - apt-get update
+    - apt-get install -y --no-install-recommends openssh-client make git gcc libffi-dev libssl-dev curl jq
+    - pip install --no-cache-dir ansible ansible-lint hvac pyvmomi
+    - ansible-galaxy collection install community.hashi_vault
+    - mkdir -p .tmp
+    - export VAULT_TOKEN="$(cat .tmp/vault_token_ansible)"
+    - export ANSIBLE_HASHI_VAULT_ADDR="$VAULT_ADDR"
+
+# TEMPLATE ANSIBLE FOR ALL OTHER JOBS
+.ansible_harbor_base:
+  image:
+    name: "harbor-formation.coak.fr/devops/ansible:latest"
+    entrypoint: [""]
+    pull_policy: always
+  before_script:
+    - mkdir -p .tmp
+    - export VAULT_TOKEN="$(cat .tmp/vault_token_ansible)"
+    - export ANSIBLE_HASHI_VAULT_ADDR="$VAULT_ADDR"
+
+
+# ANSIBLE - Get SSH key from Vault
+ansible_bootstrap_secrets:
+  extends: .ansible_bootstrap_base
+  stage: ansible-harbor
+  rules: *main_or_develop_rules
+  needs:
+    - job: vault_login_ansible
+      artifacts: true
+  script:
+    - |
+      python - <<'PY'
+      import os
+      from hvac import Client
+
+      client = Client(
+          url=os.environ["VAULT_ADDR"],
+          token=os.environ["VAULT_TOKEN"],
+      )
+
+      secret = client.secrets.kv.v2.read_secret_version(
+          mount_point="ansible",
+          path="proxmox/dev",
+      )
+
+      ssh_key = secret["data"]["data"]["ci_ssh_private_key"]
+      ssh_key = ssh_key.replace("\\n", "\n")
+
+      if not ssh_key.endswith("\n"):
+          ssh_key += "\n"
+
+      with open(".tmp/ci_ssh_key", "w") as file:
+          file.write(ssh_key)
+      PY
+    - chmod 600 .tmp/ci_ssh_key
+  artifacts:
+    paths:
+      - .tmp/ci_ssh_key
+    expire_in: 1 hour
+
+# ANSIBLE - HARBOR VALIDATION
+ansible_check_harbor:
+  extends: .ansible_bootstrap_base
+  stage: ansible-harbor
+  rules: *main_or_develop_rules
+  needs:
+    - job: vault_login_ansible
+      artifacts: true
+    - job: ansible_bootstrap_secrets
+      artifacts: true
+    - job: apply_harbor
+  script:
+    - export ANSIBLE_CONFIG=ansible/ansible.cfg
+    - cd ansible
+    - make install
+    - make syntax-dev
+    - make check-harbor-dev SSH_KEY_PATH="../.tmp/ci_ssh_key"
+
+# ANSIBLE - HARBOR DEPLOYMENT
+ansible_deploy_harbor:
+  extends: .ansible_bootstrap_base
+  stage: ansible-harbor
+  rules: *main_or_develop_rules
+  needs:
+    - job: vault_login_ansible
+      artifacts: true
+    - job: ansible_bootstrap_secrets
+      artifacts: true
+    - job: ansible_check_harbor
+  script:
+    - export ANSIBLE_CONFIG=ansible/ansible.cfg
+    - cd ansible
+    - make install
+    - make deploy-harbor-dev SSH_KEY_PATH="../.tmp/ci_ssh_key"
+
+# ANSIBLE - KUBERNETES API LOAD BALANCERS VALIDATION
+ansible_check_kubernetes_load_balancers:
+  extends: .ansible_harbor_base
+  stage: ansible
+  rules: *main_or_develop_rules
+  needs:
+    - job: ensure_ansible_image
+    - job: vault_login_ansible
+      artifacts: true
+    - job: ansible_bootstrap_secrets
+      artifacts: true
+    - job: apply_kubernetes_api_load_balancers
+  script:
+    - export ANSIBLE_CONFIG=ansible/ansible.cfg
+    - cd ansible
+    - make check-kubernetes-load-balancers-dev SSH_KEY_PATH="../.tmp/ci_ssh_key"
+
+# ANSIBLE - KUBERNETES API LOAD BALANCERS DEPLOYMENT
+ansible_deploy_kubernetes_load_balancers:
+  extends: .ansible_harbor_base
+  stage: ansible
+  rules: *main_or_develop_rules
+  needs:
+    - job: vault_login_ansible
+      artifacts: true
+    - job: ansible_bootstrap_secrets
+      artifacts: true
+    - job: ansible_check_kubernetes_load_balancers
+  script:
+    - export ANSIBLE_CONFIG=ansible/ansible.cfg
+    - cd ansible
+    - make deploy-kubernetes-load-balancers-dev SSH_KEY_PATH="../.tmp/ci_ssh_key"
+
+ansible_check_kubernetes_prerequisites:
+  extends: .ansible_harbor_base
+  stage: ansible
+  rules: *main_or_develop_rules
+  needs:
+    - job: ensure_ansible_image
+    - job: vault_login_ansible
+      artifacts: true
+    - job: ansible_bootstrap_secrets
+      artifacts: true
+    - job: apply_kubernetes
+  script:
+    - export ANSIBLE_CONFIG=ansible/ansible.cfg
+    - cd ansible
+    - make check-kubernetes-prerequisites-dev SSH_KEY_PATH="../.tmp/ci_ssh_key"
+
+ansible_deploy_kubernetes_prerequisites:
+  extends: .ansible_harbor_base
+  stage: ansible
+  rules: *main_or_develop_rules
+  allow_failure: false
+  needs:
+    - job: vault_login_ansible
+      artifacts: true
+    - job: ansible_bootstrap_secrets
+      artifacts: true
+    - job: ansible_check_kubernetes_prerequisites
+  script:
+    - export ANSIBLE_CONFIG=ansible/ansible.cfg
+    - cd ansible
+    - make deploy-kubernetes-prerequisites-dev SSH_KEY_PATH="../.tmp/ci_ssh_key"
+  
+ansible_check_kubeadm_init:
+  extends: .ansible_harbor_base
+  stage: ansible
+  rules: *main_or_develop_rules
+  needs:
+    - job: vault_login_ansible
+      artifacts: true
+    - job: ansible_bootstrap_secrets
+      artifacts: true
+    - job: ansible_deploy_kubernetes_prerequisites
+  script:
+    - export ANSIBLE_CONFIG=ansible/ansible.cfg
+    - cd ansible
+    - make check-kubeadm-init-dev SSH_KEY_PATH="../.tmp/ci_ssh_key"
+
+ansible_deploy_kubeadm_init:
+  extends: .ansible_harbor_base
+  stage: ansible
+  rules: *main_or_develop_rules
+  allow_failure: false
+  needs:
+    - job: vault_login_ansible
+      artifacts: true
+    - job: ansible_bootstrap_secrets
+      artifacts: true
+    - job: ansible_check_kubeadm_init
+  script:
+    - export ANSIBLE_CONFIG=ansible/ansible.cfg
+    - cd ansible
+    - make deploy-kubeadm-init-dev SSH_KEY_PATH="../.tmp/ci_ssh_key"
+
+ansible_check_kubernetes_cni:
+  extends: .ansible_harbor_base
+  stage: ansible
+  rules: *main_or_develop_rules
+  needs:
+    - job: vault_login_ansible
+      artifacts: true
+    - job: ansible_bootstrap_secrets
+      artifacts: true
+    - job: ansible_deploy_kubeadm_init
+  script:
+    - export ANSIBLE_CONFIG=ansible/ansible.cfg
+    - cd ansible
+    - make check-kubernetes-cni-dev SSH_KEY_PATH="../.tmp/ci_ssh_key"
+
+ansible_deploy_kubernetes_cni:
+  extends: .ansible_harbor_base
+  stage: ansible
+  rules: *main_or_develop_rules
+  allow_failure: false
+  needs:
+    - job: vault_login_ansible
+      artifacts: true
+    - job: ansible_bootstrap_secrets
+      artifacts: true
+    - job: ansible_check_kubernetes_cni
+  script:
+    - export ANSIBLE_CONFIG=ansible/ansible.cfg
+    - cd ansible
+    - make deploy-kubernetes-cni-dev SSH_KEY_PATH="../.tmp/ci_ssh_key"
+
+ansible_check_kubeadm_control_plane_join:
+  extends: .ansible_harbor_base
+  stage: ansible
+  rules: *main_or_develop_rules
+  needs:
+    - job: vault_login_ansible
+      artifacts: true
+    - job: ansible_bootstrap_secrets
+      artifacts: true
+    - job: ansible_deploy_kubernetes_cni
+  script:
+    - export ANSIBLE_CONFIG=ansible/ansible.cfg
+    - cd ansible
+    - make check-kubeadm-control-plane-join-dev SSH_KEY_PATH="../.tmp/ci_ssh_key"
+
+ansible_deploy_kubeadm_control_plane_join:
+  extends: .ansible_harbor_base
+  stage: ansible
+  rules: *main_or_develop_rules
+  allow_failure: false
+  needs:
+    - job: vault_login_ansible
+      artifacts: true
+    - job: ansible_bootstrap_secrets
+      artifacts: true
+    - job: ansible_check_kubeadm_control_plane_join
+  script:
+    - export ANSIBLE_CONFIG=ansible/ansible.cfg
+    - cd ansible
+    - make deploy-kubeadm-control-plane-join-dev SSH_KEY_PATH="../.tmp/ci_ssh_key"
+  
+ansible_check_kubeadm_worker_join:
+  extends: .ansible_harbor_base
+  stage: ansible
+  rules: *main_or_develop_rules
+  needs:
+    - job: vault_login_ansible
+      artifacts: true
+    - job: ansible_bootstrap_secrets
+      artifacts: true
+    - job: ansible_deploy_kubeadm_control_plane_join
+  script:
+    - export ANSIBLE_CONFIG=ansible/ansible.cfg
+    - cd ansible
+    - make check-kubeadm-worker-join-dev SSH_KEY_PATH="../.tmp/ci_ssh_key"
+
+ansible_deploy_kubeadm_worker_join:
+  extends: .ansible_harbor_base
+  stage: ansible
+  rules: *main_or_develop_rules
+  needs:
+    - job: vault_login_ansible
+      artifacts: true
+    - job: ansible_bootstrap_secrets
+      artifacts: true
+    - job: ansible_check_kubeadm_worker_join
+  script:
+    - export ANSIBLE_CONFIG=ansible/ansible.cfg
+    - cd ansible
+    - make deploy-kubeadm-worker-join-dev SSH_KEY_PATH="../.tmp/ci_ssh_key"
+
+ansible_check_kubernetes_cluster_validation:
+  extends: .ansible_harbor_base
+  stage: ansible
+  rules: *main_or_develop_rules
+  needs:
+    - job: vault_login_ansible
+      artifacts: true
+    - job: ansible_bootstrap_secrets
+      artifacts: true
+    - job: ansible_deploy_kubeadm_worker_join
+  script:
+    - export ANSIBLE_CONFIG=ansible/ansible.cfg
+    - cd ansible
+    - make check-kubernetes-cluster-validation-dev SSH_KEY_PATH="../.tmp/ci_ssh_key"
+
+ansible_deploy_kubernetes_cluster_validation:
+  extends: .ansible_harbor_base
+  stage: ansible
+  rules: *main_or_develop_rules
+  allow_failure: false
+  needs:
+    - job: vault_login_ansible
+      artifacts: true
+    - job: ansible_bootstrap_secrets
+      artifacts: true
+    - job: ansible_check_kubernetes_cluster_validation
+  script:
+    - export ANSIBLE_CONFIG=ansible/ansible.cfg
+    - cd ansible
+    - make deploy-kubernetes-cluster-validation-dev SSH_KEY_PATH="../.tmp/ci_ssh_key"

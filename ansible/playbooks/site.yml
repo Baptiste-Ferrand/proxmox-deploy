@@ -1,0 +1,65 @@
+- name: Install Docker and Harbor on Harbor VM
+  hosts: harbor
+  become: true
+  tags:
+    - harbor
+  roles:
+    - docker
+    - harbor
+
+- name: Configure Kubernetes API Load Balancers
+  hosts: kubernetes_load_balancers
+  become: true
+  tags:
+    - kubernetes_load_balancers
+  roles:
+    - kubernetes_api_load_balancer
+
+- name: Prepare Kubernetes nodes
+  hosts: kubernetes_nodes
+  become: true
+  tags:
+    - kubernetes_prerequisites
+  roles:
+    - kubernetes_common
+
+- name: Initialize first Kubernetes control plane
+  hosts: k8s-cp-01
+  become: true
+  tags:
+    - kubeadm_init
+  roles:
+    - kubeadm_init
+
+- name: Install Kubernetes CNI
+  hosts: k8s-cp-01
+  become: true
+  tags:
+    - kubernetes_cni
+  roles:
+    - kubernetes_cni
+
+- name: Join additional Kubernetes control planes
+  hosts: kubernetes_control_planes:!k8s-cp-01
+  become: true
+  serial: 1
+  tags:
+    - kubeadm_control_plane_join
+  roles:
+    - kubeadm_control_plane_join
+
+- name: Join Kubernetes workers
+  hosts: kubernetes_workers
+  become: true
+  tags:
+    - kubeadm_worker_join
+  roles:
+    - kubeadm_worker_join
+
+- name: Validate Kubernetes cluster
+  hosts: k8s-cp-01
+  become: true
+  tags:
+    - kubernetes_cluster_validation
+  roles:
+    - kubernetes_cluster_validation

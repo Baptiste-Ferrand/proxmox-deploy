@@ -1,0 +1,179 @@
+- name: Read Harbor secrets from HashiCorp Vault
+  ansible.builtin.set_fact:
+    vault_harbor_secret: >-
+      {{
+        lookup(
+          'community.hashi_vault.vault_kv2_get',
+          'proxmox/dev',
+          engine_mount_point='ansible',
+          url=lookup('env', 'VAULT_ADDR'),
+          token=lookup('env', 'VAULT_TOKEN')
+        )
+      }}
+  no_log: true
+
+- name: Set Harbor secrets
+  ansible.builtin.set_fact:
+    harbor_database_password: "{{ vault_harbor_secret.secret.harbor_database_password }}"
+    harbor_root_password: "{{ vault_harbor_secret.secret.harbor_root_password }}"
+  no_log: true
+  when: not ansible_check_mode
+
+- name: Create Harbor data directory
+  ansible.builtin.file:
+    path: "{{ harbor_data_dir }}"
+    state: directory
+    mode: "0755"
+
+- name: Download Harbor installer archive
+  ansible.builtin.get_url:
+    url: "https://github.com/goharbor/harbor/releases/download/v{{ harbor_version }}/harbor-online-installer-v{{ harbor_version }}.tgz"
+    dest: "/tmp/harbor.tgz"
+    mode: "0644"
+
+- name: Ensure Harbor install directory exists
+  ansible.builtin.file:
+    path: "{{ harbor_install_dir }}"
+    state: directory
+    mode: "0755"
+
+- name: Check if Harbor is already installed
+  ansible.builtin.stat:
+    path: "{{ harbor_install_dir }}/.harbor_installed"
+  register: harbor_installed_marker
+  when: not ansible_check_mode
+
+- name: Extract Harbor installer
+  ansible.builtin.unarchive:
+    src: /tmp/harbor.tgz
+    dest: "{{ harbor_install_dir }}"
+    remote_src: true
+    extra_opts: [--strip-components=1]
+  when:
+    - not ansible_check_mode
+    - not (harbor_installed_marker.stat.exists | default(false))
+
+- name: Ensure Harbor cert directory exists
+  ansible.builtin.file:
+    path: /opt/harbor/certs
+    state: directory
+    mode: "0755"
+
+- name: Check Harbor TLS certificate files
+  ansible.builtin.stat:
+    path: "{{ item }}"
+  loop:
+    - "{{ harbor_tls_cert_path }}"
+    - "{{ harbor_tls_key_path }}"
+  register: harbor_tls_files
+  when: not ansible_check_mode
+
+- name: Generate Harbor certificate from Vault PKI
+  community.hashi_vault.vault_pki_generate_certificate:
+    role_name: harbor-formation
+    common_name: "{{ harbor_hostname }}"
+    ttl: "8760h"
+    engine_mount_point: pki
+    url: "{{ lookup('env', 'VAULT_ADDR') }}"
+    auth_method: token
+    token: "{{ lookup('env', 'VAULT_TOKEN') }}"
+    private_key_format: pkcs8
+    format: pem
+  delegate_to: localhost
+  register: vault_harbor_certificate
+  no_log: true
+  when:
+    - not ansible_check_mode
+    - harbor_tls_renew_certificate | bool
+      or not harbor_tls_files.results[0].stat.exists
+      or not harbor_tls_files.results[1].stat.exists
+
+- name: Install Harbor TLS certificate
+  ansible.builtin.copy:
+    content: "{{ vault_harbor_certificate.data.data.certificate }}\n{{ vault_harbor_certificate.data.data.ca_chain | join('\n') }}\n"
+    dest: "{{ harbor_tls_cert_path }}"
+    owner: root
+    group: root
+    mode: "0644"
+  register: harbor_tls_certificate
+  no_log: true
+  when: vault_harbor_certificate is not skipped
+
+- name: Install Harbor TLS private key
+  ansible.builtin.copy:
+    content: "{{ vault_harbor_certificate.data.data.private_key }}"
+    dest: "{{ harbor_tls_key_path }}"
+    owner: root
+    group: root
+    mode: "0600"
+  register: harbor_tls_key
+  no_log: true
+  when: vault_harbor_certificate is not skipped
+
+
+
+
+- name: Render harbor.yml
+  ansible.builtin.template:
+    src: harbor.yml.j2
+    dest: "{{ harbor_install_dir }}/harbor.yml"
+    mode: "0644"
+  no_log: true
+  register: harbor_config
+  when: not ansible_check_mode
+
+- name: Run Harbor installer (first install)
+  ansible.builtin.command: ./install.sh
+  args:
+    chdir: "{{ harbor_install_dir }}"
+  when:
+    - not ansible_check_mode
+    - not (harbor_installed_marker.stat.exists | default(false))
+
+- name: Reconfigure Harbor when config changed (already installed)
+  ansible.builtin.command: ./prepare
+  args:
+    chdir: "{{ harbor_install_dir }}"
+  when:
+    - not ansible_check_mode
+    - (harbor_installed_marker.stat.exists | default(false))
+    - harbor_config.changed
+
+- name: Apply Harbor configuration when config changed (already installed)
+  ansible.builtin.command: ./install.sh
+  args:
+    chdir: "{{ harbor_install_dir }}"
+  when:
+    - not ansible_check_mode
+    - (harbor_installed_marker.stat.exists | default(false))
+    - harbor_config.changed
+
+- name: Ensure Harbor project exists
+  ansible.builtin.uri:
+    url: "https://127.0.0.1/api/v2.0/projects"
+    method: POST
+    user: admin
+    password: "{{ harbor_root_password }}"
+    force_basic_auth: true
+    headers:
+      Host: "{{ harbor_hostname }}"
+    body_format: json
+    body:
+      project_name: "{{ harbor_project_name }}"
+      metadata:
+        public: "{{ harbor_project_public | ternary('true', 'false') }}"
+    status_code:
+      - 201
+      - 409
+    validate_certs: false
+  no_log: true
+  when: not ansible_check_mode
+
+- name: Mark Harbor as installed
+  ansible.builtin.file:
+    path: "{{ harbor_install_dir }}/.harbor_installed"
+    state: touch
+    mode: "0644"
+  when:
+    - not ansible_check_mode
+    - not (harbor_installed_marker.stat.exists | default(false))

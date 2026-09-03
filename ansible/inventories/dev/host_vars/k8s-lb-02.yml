@@ -1,0 +1,3 @@
+keepalived_state: "BACKUP"
+keepalived_priority: 100
+keepalived_unicast_peer: "192.168.100.91"

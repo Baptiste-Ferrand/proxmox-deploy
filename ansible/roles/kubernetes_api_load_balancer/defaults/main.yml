@@ -1,0 +1,10 @@
+haproxy_package_name: "haproxy"
+keepalived_package_name: "keepalived"
+
+haproxy_service_name: "haproxy"
+keepalived_service_name: "keepalived"
+
+keepalived_advert_int: 1
+keepalived_version: 3
+
+keepalived_haproxy_check_weight: -100

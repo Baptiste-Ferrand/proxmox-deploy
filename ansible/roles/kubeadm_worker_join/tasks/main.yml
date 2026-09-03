@@ -1,0 +1,139 @@
+- name: Check whether this worker already joined a Kubernetes cluster
+  ansible.builtin.stat:
+    path: /etc/kubernetes/kubelet.conf
+  register: worker_kubelet_conf
+
+- name: Verify Kubernetes API VIP is reachable from this worker
+  ansible.builtin.wait_for:
+    host: "{{ kubernetes_control_plane_vip }}"
+    port: 6443
+    connect_timeout: 3
+    timeout: 15
+    state: started
+  when:
+    - not worker_kubelet_conf.stat.exists
+    - not ansible_check_mode
+
+- name: Generate a temporary worker join command
+  ansible.builtin.command:
+    argv:
+      - kubeadm
+      - token
+      - create
+      - --ttl
+      - 2h
+      - --print-join-command
+  delegate_to: k8s-cp-01
+  register: worker_join_command
+  no_log: true
+  changed_when: false
+  when:
+    - not worker_kubelet_conf.stat.exists
+    - not ansible_check_mode
+
+- name: Join this node as a Kubernetes worker
+  ansible.builtin.command:
+        cmd: >-
+          {{ worker_join_command.stdout }}
+          --cri-socket {{ containerd_cri_socket }}
+          --v=5
+  no_log: true
+  when:
+    - not worker_kubelet_conf.stat.exists
+    - not ansible_check_mode  
+
+- name: Wait for worker kubelet configuration
+  ansible.builtin.wait_for:
+    path: /etc/kubernetes/kubelet.conf
+    timeout: 300
+  when: not ansible_check_mode
+
+- name: Verify containerd is active on worker
+  ansible.builtin.command:
+    argv:
+      - systemctl
+      - is-active
+      - "{{ containerd_service_name }}"
+  changed_when: false
+  when: not ansible_check_mode
+
+- name: Verify kubelet is active on worker
+  ansible.builtin.command:
+    argv:
+      - systemctl
+      - is-active
+      - "{{ kubelet_service_name }}"
+  changed_when: false
+  when: not ansible_check_mode
+
+- name: Wait until this worker is Ready in Kubernetes
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --kubeconfig
+      - /etc/kubernetes/admin.conf
+      - get
+      - node
+      - "{{ inventory_hostname }}"
+      - -o
+      - jsonpath={.status.conditions[?(@.type=="Ready")].status}
+  delegate_to: k8s-cp-01
+  changed_when: false
+  register: worker_ready_status
+  retries: 30
+  delay: 10
+  until: worker_ready_status.stdout == "True"
+  when: not ansible_check_mode
+
+- name: Display worker Ready status
+  ansible.builtin.debug:
+    msg: "{{ inventory_hostname }} successfully joined the cluster and is Ready."
+  when: not ansible_check_mode
+
+- name: Read current Cilium Helm values
+  ansible.builtin.command:
+    argv:
+      - helm
+      - get
+      - values
+      - cilium
+      - --namespace
+      - kube-system
+      - --output
+      - json
+  delegate_to: k8s-cp-01
+  run_once: true
+  changed_when: false
+  register: cilium_current_values
+  environment:
+    KUBECONFIG: /etc/kubernetes/admin.conf
+  when: not ansible_check_mode
+
+- name: Restore Cilium operator high availability
+  ansible.builtin.command:
+    argv:
+      - helm
+      - upgrade
+      - cilium
+      - cilium/cilium
+      - --namespace
+      - kube-system
+      - --reuse-values
+      - --set
+      - "operator.replicas={{ cilium_operator_ha_replicas }}"
+      - --wait
+      - --timeout
+      - "{{ kubernetes_validation_timeout }}"
+  delegate_to: k8s-cp-01
+  run_once: true
+  environment:
+    KUBECONFIG: /etc/kubernetes/admin.conf
+  changed_when: true
+  when:
+    - not ansible_check_mode
+    - >-
+      (
+        (cilium_current_values.stdout | from_json).operator.replicas
+        | default(cilium_operator_bootstrap_replicas)
+        | int
+      ) != (cilium_operator_ha_replicas | int)

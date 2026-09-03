@@ -1,0 +1,27 @@
+kubernetes_cluster_version: "v1.34.11"
+
+kubernetes_control_plane_endpoint: "192.168.100.90:6443"
+kubernetes_control_plane_vip: "192.168.100.90"
+
+kubernetes_pod_subnet: "10.244.0.0/16"
+kubernetes_service_subnet: "10.96.0.0/12"
+
+kubernetes_minor_version: "v1.34"
+kubernetes_apt_repository: >-
+  https://pkgs.k8s.io/core:/stable:/{{ kubernetes_minor_version }}/deb/
+
+kubernetes_packages:
+  - kubelet
+  - kubeadm
+  - kubectl
+
+containerd_cri_socket: "unix:///run/containerd/containerd.sock"
+containerd_service_name: "containerd"
+kubelet_service_name: "kubelet"
+
+cilium_chart_version: "1.20.1"
+cilium_helm_repository: "https://helm.cilium.io"
+cilium_kube_proxy_replacement: true
+cilium_operator_bootstrap_replicas: 1
+cilium_operator_ha_replicas: 2
+kubernetes_validation_timeout: "10m"

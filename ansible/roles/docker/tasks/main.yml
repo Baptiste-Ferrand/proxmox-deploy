@@ -1,0 +1,72 @@
+- name: Ensure dpkg is not left in an inconsistent state
+  ansible.builtin.command: dpkg --configure -a
+  register: dpkg_configure
+  changed_when: "'Setting up' in dpkg_configure.stdout"
+  become: true
+
+- name: Install required packages for apt over HTTPS
+  ansible.builtin.apt:
+    name:
+      - ca-certificates
+      - curl
+      - gnupg
+      - lsb-release
+    state: present
+    update_cache: true
+
+- name: Ensure keyrings directory exists
+  ansible.builtin.file:
+    path: /etc/apt/keyrings
+    state: directory
+    mode: "0755"
+
+- name: Download Docker GPG key
+  ansible.builtin.get_url:
+    url: https://download.docker.com/linux/debian/gpg
+    dest: /tmp/docker.asc
+    mode: "0644"
+  become: true
+
+- name: Convert Docker GPG key to keyring format
+  ansible.builtin.command:
+    cmd: gpg --dearmor --yes --output /etc/apt/keyrings/docker.gpg /tmp/docker.asc
+  become: true
+  changed_when: false
+
+- name: Remove any pre-existing Docker repository file (avoid signed-by conflicts)
+  ansible.builtin.file:
+    path: /etc/apt/sources.list.d/docker.list
+    state: absent
+
+- name: Add Docker official repository
+  ansible.builtin.apt_repository:
+    repo: "deb [signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/debian {{ ansible_distribution_release }} stable"
+    filename: docker
+    state: present
+  register: docker_repo
+  become: true
+
+- name: Update apt cache if repository changed
+  ansible.builtin.apt:
+    update_cache: true
+  when: docker_repo.changed
+  become: true
+  
+- name: Install Docker packages
+  ansible.builtin.apt:
+    name:
+      - docker-ce
+      - docker-ce-cli
+      - containerd.io
+      - docker-buildx-plugin
+      - docker-compose-plugin
+    state: present
+    update_cache: true
+  become: true
+
+- name: Ensure docker service is enabled and started
+  ansible.builtin.systemd:
+    name: docker
+    enabled: true
+    state: started
+  when: not ansible_check_mode

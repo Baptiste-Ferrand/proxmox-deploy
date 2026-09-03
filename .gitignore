@@ -1,0 +1,45 @@
+# Terraform state & cache
+**/.terraform/
+**/.terraform.lock.hcl
+**/terraform.tfstate
+**/terraform.tfstate.backup
+**/terraform.tfstate.d/
+**/.terraform.tfstate.lock.info
+**/crash.log
+**/crash.*.log
+
+# Fichiers de variables SENSIBLES - ne jamais committer
+**/*.auto.tfvars
+**/override.tf
+**/override.tf.json
+**/*_override.tf
+**/*_override.tf.json
+
+# Plans Terraform (peuvent contenir des secrets en clair !)
+**/*.tfplan
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+env/
+.trash
+
+
+# SSH
+*.pem
+*.key
+
+# Vault
+.vault_pass
+
+# Python
+__pycache__/
+
+# Ansible
+*.retry

@@ -1,0 +1,91 @@
+- name: Check whether this node already joined a Kubernetes cluster
+  ansible.builtin.stat:
+    path: /etc/kubernetes/kubelet.conf
+  register: kubelet_conf
+
+- name: Generate a temporary control-plane join command
+  ansible.builtin.command:
+    argv:
+      - kubeadm
+      - token
+      - create
+      - --ttl
+      - 2h
+      - --print-join-command
+  delegate_to: k8s-cp-01
+  register: control_plane_join_base
+  no_log: true
+  when:
+    - not kubelet_conf.stat.exists
+    - not ansible_check_mode
+
+- name: Upload control-plane certificates and create temporary decryption key
+  ansible.builtin.command:
+    argv:
+      - kubeadm
+      - init
+      - phase
+      - upload-certs
+      - --upload-certs
+  delegate_to: k8s-cp-01
+  register: control_plane_cert_upload
+  no_log: true
+  when:
+    - not kubelet_conf.stat.exists
+    - not ansible_check_mode
+
+- name: Extract temporary certificate key
+  ansible.builtin.set_fact:
+    control_plane_certificate_key: >-
+      {{
+        control_plane_cert_upload.stdout
+        | regex_search('(?m)^[0-9a-f]{64}$')
+      }}
+  no_log: true
+  when:
+    - not kubelet_conf.stat.exists
+    - not ansible_check_mode
+
+- name: Verify Kubernetes API VIP is reachable from this control plane
+  ansible.builtin.wait_for:
+    host: "{{ kubernetes_control_plane_vip }}"
+    port: 6443
+    connect_timeout: 3
+    timeout: 15
+    state: started
+  when:
+    - not kubelet_conf.stat.exists
+    - not ansible_check_mode
+
+- name: Join this node as an additional control plane
+  ansible.builtin.command:
+    cmd: >-
+      {{ control_plane_join_base.stdout }}
+      --control-plane
+      --certificate-key {{ control_plane_certificate_key }}
+      --cri-socket {{ containerd_cri_socket }}
+      --v=5
+  no_log: true
+  when:
+    - not kubelet_conf.stat.exists
+    - not ansible_check_mode
+
+- name: Wait for kubelet configuration after control-plane join
+  ansible.builtin.wait_for:
+    path: /etc/kubernetes/kubelet.conf
+    timeout: 300
+  when: not ansible_check_mode
+
+- name: Verify this node joined as a control plane
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --kubeconfig
+      - /etc/kubernetes/admin.conf
+      - get
+      - nodes
+      - "{{ inventory_hostname }}"
+      - -o
+      - wide
+  changed_when: false
+  when: not ansible_check_mode

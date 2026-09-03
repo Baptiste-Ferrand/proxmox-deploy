@@ -1,0 +1,40 @@
+global_defs {
+    router_id {{ inventory_hostname }}
+    enable_script_security
+    script_user root
+}
+
+vrrp_script check_haproxy {
+    script "/usr/bin/pgrep -x haproxy"
+    user root
+    interval 2
+    timeout 2
+    fall 2
+    rise 2
+    weight {{ keepalived_haproxy_check_weight }}
+}
+
+vrrp_instance K8S_API_VIP {
+    state {{ keepalived_state }}
+    interface {{ keepalived_interface }}
+    virtual_router_id {{ keepalived_virtual_router_id }}
+    priority {{ keepalived_priority }}
+    advert_int {{ keepalived_advert_int }}
+    version {{ keepalived_version }}
+
+    unicast_src_ip {{ ansible_host }}
+    unicast_peer {
+        {{ keepalived_unicast_peer }}
+    }
+
+    check_unicast_src
+    unicast_fault_no_peer
+
+    virtual_ipaddress {
+        {{ kubernetes_api_vip_cidr }}
+    }
+
+    track_script {
+        check_haproxy
+    }
+}

@@ -1,0 +1,14 @@
+kubernetes_api_vip: "192.168.100.90"
+kubernetes_api_vip_cidr: "192.168.100.90/24"
+kubernetes_api_port: 6443
+
+keepalived_interface: "eth0"
+keepalived_virtual_router_id: 51
+
+kubernetes_api_backends:
+  - name: "k8s-cp-01"
+    address: "192.168.100.101"
+  - name: "k8s-cp-02"
+    address: "192.168.100.102"
+  - name: "k8s-cp-03"
+    address: "192.168.100.103"

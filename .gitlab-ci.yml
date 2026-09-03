@@ -1,0 +1,36 @@
+stages:
+  - validate
+  - plan
+  - apply
+  - ansible-harbor
+  - build
+  - ansible
+
+# variables:
+#   TF_IN_AUTOMATION: "true"
+#   ANSIBLE_IMAGE_TAG: "v1"
+
+.vault_login:
+  image:
+    name: alpine:3.20
+    entrypoint: [""]
+  stage: .pre
+  script:
+    - apk add --no-cache curl jq
+    - |
+      TOKEN=$(curl --fail --silent --show-error --request POST \
+        --data "{\"role_id\":\"$VAULT_ROLE_ID\",\"secret_id\":\"$VAULT_SECRET_ID\"}" \
+        "$VAULT_ADDR/v1/auth/approle/login" | jq -er '.auth.client_token')
+
+      mkdir -p .tmp
+      printf '%s' "$TOKEN" > ".tmp/${VAULT_TOKEN_FILE}"
+      chmod 600 ".tmp/${VAULT_TOKEN_FILE}"
+  artifacts:
+    paths:
+      - ".tmp/$VAULT_TOKEN_FILE"
+    expire_in: 1 hour
+
+include:
+  - local: .gitlab/ci/terraform.yml
+  - local: .gitlab/ci/ansible.yml
+  - local: .gitlab/ci/build.yml

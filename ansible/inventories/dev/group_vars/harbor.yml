@@ -1,0 +1,14 @@
+harbor_version: "2.11.0"
+harbor_install_dir: "/opt/harbor"
+harbor_data_dir: "/data"
+harbor_ip: "192.168.100.40"
+harbor_hostname: "harbor-formation.coak.fr"
+
+harbor_tls_enabled: true
+harbor_tls_cert_path: "/opt/harbor/certs/harbor.crt"
+harbor_tls_key_path: "/opt/harbor/certs/harbor.key"
+
+harbor_tls_renew_certificate: false
+
+harbor_project_name: "devops"
+harbor_project_public: true

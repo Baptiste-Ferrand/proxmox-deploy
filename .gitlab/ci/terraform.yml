@@ -1,0 +1,171 @@
+.main_or_develop_rules: &main_or_develop_rules
+  - if: '$CI_COMMIT_BRANCH == "main" || $CI_COMMIT_BRANCH == "develop"'
+
+.default_tf:
+  image:
+    name: hashicorp/terraform:1.9
+    entrypoint: [""]
+
+.harbor_target: &harbor_target
+  TF_STATE_NAME: "harbor-vm"
+  TF_VARS_FILE: "vm-configs/harbor-vm.tfvars"
+  TF_PLAN_FILE: "tfplan-harbor"
+  TF_RESOURCE_GROUP: "terraform-harbor-vm"
+  TF_APPLY_ARGS: ""
+
+.kubernetes_target: &kubernetes_target
+  TF_STATE_NAME: "kubernetes-cluster"
+  TF_VARS_FILE: "vm-configs/kubernetes-vms.tfvars"
+  TF_PLAN_FILE: "tfplan-kubernetes"
+  TF_RESOURCE_GROUP: "terraform-kubernetes-cluster"
+  TF_APPLY_ARGS: "-parallelism=1"
+
+.kubernetes_api_load_balancers: &kubernetes_api_load_balancers
+  TF_STATE_NAME: "kubernetes-api-load-balancers"
+  TF_VARS_FILE: "vm-configs/kubernetes-lb-vms.tfvars"
+  TF_PLAN_FILE: "tfplan-kubernetes-load-balancers"
+  TF_RESOURCE_GROUP: "terraform-kubernetes-api-load-balancers"
+  TF_APPLY_ARGS: "-parallelism=1"
+
+vault_login_terraform:
+  extends: .vault_login
+  variables:
+    VAULT_LOGIN_NAME: "Terraform"
+    VAULT_ROLE_ID: "$VAULT_TERRAFORM_ROLE_ID"
+    VAULT_SECRET_ID: "$VAULT_TERRAFORM_SECRET_ID"
+    VAULT_TOKEN_FILE: "vault_token_terraform"
+
+# TEMPLATE TERRAFORM
+.terraform_base:
+  extends: .default_tf
+  before_script:
+    - export VAULT_TOKEN="$(cat .tmp/vault_token_terraform)"
+    - export TF_VAR_vault_addr="$VAULT_ADDR"
+    - export TF_VAR_vault_token="$VAULT_TOKEN"
+    - export TF_HTTP_USERNAME="gitlab-ci-token"
+    - export TF_HTTP_PASSWORD="$CI_JOB_TOKEN"
+    - export TF_HTTP_LOCK_METHOD="POST"
+    - export TF_HTTP_UNLOCK_METHOD="DELETE"
+    - export TF_HTTP_RETRY_WAIT_MIN="5"
+    - export TF_HTTP_ADDRESS="${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/terraform/state/${TF_STATE_NAME}"
+    - export TF_HTTP_LOCK_ADDRESS="${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/terraform/state/${TF_STATE_NAME}/lock"
+    - export TF_HTTP_UNLOCK_ADDRESS="${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/terraform/state/${TF_STATE_NAME}/lock"
+    - cd terraform/stacks/vms
+    - terraform init -input=false -reconfigure
+
+.terraform_validate:
+  extends: .terraform_base
+  stage: validate
+  script:
+    - terraform validate
+
+.terraform_plan:
+  extends: .terraform_base
+  stage: plan
+  script:
+    - terraform plan -input=false -var-file="$TF_VARS_FILE" -out="$TF_PLAN_FILE"
+  artifacts:
+    access: developer
+    paths:
+      - "terraform/stacks/vms/$TF_PLAN_FILE"
+    expire_in: 1 day
+
+.terraform_apply:
+  extends: .terraform_base
+  stage: apply
+  allow_failure: false
+  script:
+    - terraform apply -input=false $TF_APPLY_ARGS -auto-approve "$TF_PLAN_FILE"
+
+# HARBOR VM
+validate_harbor:
+  extends: .terraform_validate
+  variables:
+    <<: *harbor_target
+  needs:
+    - job: vault_login_terraform
+      artifacts: true
+
+plan_harbor:
+  extends: .terraform_plan
+  variables:
+    <<: *harbor_target
+  rules: *main_or_develop_rules
+  resource_group: "$TF_RESOURCE_GROUP"
+  needs:
+    - job: vault_login_terraform
+      artifacts: true
+    - job: validate_harbor
+
+apply_harbor:
+  extends: .terraform_apply
+  variables:
+    <<: *harbor_target
+  rules: *main_or_develop_rules
+  resource_group: "$TF_RESOURCE_GROUP"
+  needs:
+    - job: vault_login_terraform
+      artifacts: true
+    - job: plan_harbor
+
+# KUBERNETES VMS
+validate_kubernetes:
+  extends: .terraform_validate
+  variables:
+    <<: *kubernetes_target
+  needs:
+    - job: vault_login_terraform
+      artifacts: true
+
+plan_kubernetes:
+  extends: .terraform_plan
+  variables:
+    <<: *kubernetes_target
+  rules: *main_or_develop_rules
+  resource_group: "$TF_RESOURCE_GROUP"
+  needs:
+    - job: vault_login_terraform
+      artifacts: true
+    - job: validate_kubernetes
+
+apply_kubernetes:
+  extends: .terraform_apply
+  variables:
+    <<: *kubernetes_target
+  rules: *main_or_develop_rules
+  resource_group: "$TF_RESOURCE_GROUP"
+  needs:
+    - job: vault_login_terraform
+      artifacts: true
+    - job: plan_kubernetes
+
+# KUBERNETES API LOAD BALANCERS
+validate_kubernetes_api_load_balancers:
+  extends: .terraform_validate
+  variables:
+    <<: *kubernetes_api_load_balancers
+  needs:
+    - job: vault_login_terraform
+      artifacts: true 
+
+plan_kubernetes_api_load_balancers:
+  extends: .terraform_plan
+  variables:
+    <<: *kubernetes_api_load_balancers
+  rules: *main_or_develop_rules
+  resource_group: "$TF_RESOURCE_GROUP"
+  needs:
+    - job: vault_login_terraform
+      artifacts: true
+    - job: validate_kubernetes_api_load_balancers
+
+apply_kubernetes_api_load_balancers:
+  extends: .terraform_apply
+  variables:
+    <<: *kubernetes_api_load_balancers
+  rules: *main_or_develop_rules
+  resource_group: "$TF_RESOURCE_GROUP"
+  needs:
+    - job: vault_login_terraform
+      artifacts: true
+    - job: plan_kubernetes_api_load_balancers

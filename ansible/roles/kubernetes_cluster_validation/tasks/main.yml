@@ -1,0 +1,261 @@
+- name: Wait until all Kubernetes nodes are Ready
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --kubeconfig
+      - /etc/kubernetes/admin.conf
+      - wait
+      - --for=condition=Ready
+      - node
+      - --all
+      - --timeout={{ kubernetes_validation_timeout }}
+  changed_when: false
+  when: not ansible_check_mode
+
+- name: Get all Kubernetes nodes
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --kubeconfig
+      - /etc/kubernetes/admin.conf
+      - get
+      - nodes
+      - -o
+      - json
+  changed_when: false
+  register: kubernetes_cluster_nodes
+  when: not ansible_check_mode
+
+- name: Assert that all expected Kubernetes nodes exist
+  ansible.builtin.assert:
+    that:
+      - >-
+        (
+          kubernetes_cluster_nodes.stdout
+          | from_json
+        )['items']
+        | map(attribute='metadata.name')
+        | list
+        | sort
+        ==
+        (
+          groups['kubernetes_nodes']
+          | sort
+        )
+    fail_msg: >-
+      The Kubernetes node list does not match the Ansible inventory.
+      Expected: {{ groups['kubernetes_nodes'] | sort }}
+  when: not ansible_check_mode
+
+- name: Show Kubernetes nodes
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --kubeconfig
+      - /etc/kubernetes/admin.conf
+      - get
+      - nodes
+      - -o
+      - wide
+  changed_when: false
+  register: kubernetes_nodes_wide
+  when: not ansible_check_mode
+
+- name: Display Kubernetes nodes
+  ansible.builtin.debug:
+    var: kubernetes_nodes_wide.stdout_lines
+  when: not ansible_check_mode
+
+- name: Wait for Cilium DaemonSet rollout on all nodes
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --kubeconfig
+      - /etc/kubernetes/admin.conf
+      - -n
+      - kube-system
+      - rollout
+      - status
+      - daemonset/cilium
+      - --timeout={{ kubernetes_validation_timeout }}
+  changed_when: false
+  when: not ansible_check_mode
+
+- name: Wait for Cilium operator deployment rollout
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --kubeconfig
+      - /etc/kubernetes/admin.conf
+      - -n
+      - kube-system
+      - rollout
+      - status
+      - deployment/cilium-operator
+      - --timeout={{ kubernetes_validation_timeout }}
+  changed_when: false
+  when: not ansible_check_mode
+
+- name: Get Cilium DaemonSet status
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --kubeconfig
+      - /etc/kubernetes/admin.conf
+      - -n
+      - kube-system
+      - get
+      - daemonset
+      - cilium
+      - -o
+      - json
+  changed_when: false
+  register: cilium_daemonset
+  when: not ansible_check_mode
+
+- name: Assert that Cilium runs on every Kubernetes node
+  ansible.builtin.assert:
+    that:
+      - >-
+        (
+          cilium_daemonset.stdout
+          | from_json
+        ).status.desiredNumberScheduled
+        ==
+        groups['kubernetes_nodes'] | length
+      - >-
+        (
+          cilium_daemonset.stdout
+          | from_json
+        ).status.numberAvailable
+        ==
+        groups['kubernetes_nodes'] | length
+    fail_msg: >-
+      Cilium is not available on every Kubernetes node.
+  when: not ansible_check_mode
+
+- name: Get Cilium operator deployment status
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --kubeconfig
+      - /etc/kubernetes/admin.conf
+      - -n
+      - kube-system
+      - get
+      - deployment
+      - cilium-operator
+      - -o
+      - json
+  changed_when: false
+  register: cilium_operator_deployment
+  when: not ansible_check_mode
+
+- name: Assert that Cilium operator runs in high availability mode
+  ansible.builtin.assert:
+    that:
+      - >-
+        (
+          cilium_operator_deployment.stdout
+          | from_json
+        ).status.availableReplicas
+        ==
+        cilium_operator_ha_replicas | int
+    fail_msg: >-
+      Cilium operator does not have
+      {{ cilium_operator_ha_replicas }} available replicas.
+  when: not ansible_check_mode
+
+- name: Verify Cilium kube-proxy replacement status
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --kubeconfig
+      - /etc/kubernetes/admin.conf
+      - -n
+      - kube-system
+      - exec
+      - daemonset/cilium
+      - --
+      - cilium-dbg
+      - status
+  changed_when: false
+  register: cilium_status
+  when: not ansible_check_mode
+
+- name: Assert Cilium kube-proxy replacement is enabled
+  ansible.builtin.assert:
+    that:
+      - cilium_status.stdout is search('KubeProxyReplacement:\\s+True')
+    fail_msg: >-
+      Cilium is running, but kube-proxy replacement is not enabled.
+  when: not ansible_check_mode
+
+- name: Check whether kube-proxy DaemonSet exists
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --kubeconfig
+      - /etc/kubernetes/admin.conf
+      - -n
+      - kube-system
+      - get
+      - daemonset
+      - kube-proxy
+  changed_when: false
+  failed_when: kube_proxy_daemonset.rc not in [0, 1]
+  register: kube_proxy_daemonset
+  when: not ansible_check_mode
+
+- name: Assert kube-proxy DaemonSet is absent
+  ansible.builtin.assert:
+    that:
+      - kube_proxy_daemonset.rc == 1
+    fail_msg: >-
+      kube-proxy still exists although this cluster is configured
+      to use Cilium kube-proxy replacement.
+  when: not ansible_check_mode
+
+- name: Wait for CoreDNS rollout
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --kubeconfig
+      - /etc/kubernetes/admin.conf
+      - -n
+      - kube-system
+      - rollout
+      - status
+      - deployment/coredns
+      - --timeout={{ kubernetes_validation_timeout }}
+  changed_when: false
+  when: not ansible_check_mode
+
+- name: Get all system pods
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --kubeconfig
+      - /etc/kubernetes/admin.conf
+      - get
+      - pods
+      - --all-namespaces
+      - -o
+      - wide
+  changed_when: false
+  register: kubernetes_system_pods
+  when: not ansible_check_mode
+
+- name: Display all system pods
+  ansible.builtin.debug:
+    var: kubernetes_system_pods.stdout_lines
+  when: not ansible_check_mode
+
+- name: Display successful Kubernetes cluster validation
+  ansible.builtin.debug:
+    msg: >-
+      Kubernetes cluster validation succeeded:
+      all nodes are Ready, Cilium is available on every node,
+      Cilium operator HA is enabled, kube-proxy is absent,
+      and CoreDNS is Ready.
+  when: not ansible_check_mode

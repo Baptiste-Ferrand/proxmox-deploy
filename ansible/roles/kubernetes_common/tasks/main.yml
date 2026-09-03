@@ -1,0 +1,179 @@
+- name: Set hostname from inventory name
+  ansible.builtin.hostname:
+    name: "{{ inventory_hostname }}"
+
+- name: Add Kubernetes nodes to local hosts file
+  ansible.builtin.blockinfile:
+    path: /etc/hosts
+    marker: "# {mark} ANSIBLE MANAGED KUBERNETES NODES"
+    block: |
+      {% for node in groups['kubernetes_nodes'] | sort %}
+      {{ hostvars[node].ansible_host }} {{ node }}
+      {% endfor %}
+
+- name: Disable swap immediately
+  ansible.builtin.command:
+    cmd: swapoff -a
+  when:
+    - ansible_swaptotal_mb | int > 0
+    - not ansible_check_mode
+  changed_when: true
+
+- name: Disable swap persistently in fstab
+  ansible.builtin.replace:
+    path: /etc/fstab
+    regexp: '^([^#].*\s+swap\s+.*)$'
+    replace: '# \1'
+
+- name: Configure Kubernetes kernel modules for boot
+  ansible.builtin.copy:
+    dest: /etc/modules-load.d/kubernetes.conf
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      {% for module in kubernetes_kernel_modules %}
+      {{ module }}
+      {% endfor %}
+
+- name: Load Kubernetes kernel modules
+  community.general.modprobe:
+    name: "{{ item }}"
+    state: present
+  loop: "{{ kubernetes_kernel_modules }}"
+  when: not ansible_check_mode
+
+- name: Configure Kubernetes sysctl settings
+  ansible.posix.sysctl:
+    name: "{{ item.key }}"
+    value: "{{ item.value }}"
+    state: present
+    sysctl_file: /etc/sysctl.d/99-kubernetes.conf
+    reload: true
+  loop: "{{ kubernetes_sysctl | dict2items }}"
+
+- name: Install operating system prerequisites
+  ansible.builtin.apt:
+    update_cache: true
+    cache_valid_time: 3600
+    name: "{{ kubernetes_required_packages }}"
+    state: present
+  when: not ansible_check_mode
+
+- name: Create APT keyrings directory
+  ansible.builtin.file:
+    path: /etc/apt/keyrings
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  when: not ansible_check_mode
+
+- name: Download Kubernetes repository signing key
+  ansible.builtin.get_url:
+    url: "{{ kubernetes_apt_repository }}Release.key"
+    dest: /tmp/kubernetes-release.key
+    owner: root
+    group: root
+    mode: "0644"
+  when: not ansible_check_mode
+
+- name: Install Kubernetes repository signing keyring
+  ansible.builtin.command:
+    argv:
+      - gpg
+      - --dearmor
+      - --yes
+      - --output
+      - /etc/apt/keyrings/kubernetes-apt-keyring.gpg
+      - /tmp/kubernetes-release.key
+  changed_when: false
+  when: not ansible_check_mode
+
+- name: Configure Kubernetes APT repository
+  ansible.builtin.copy:
+    dest: /etc/apt/sources.list.d/kubernetes.list
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] {{ kubernetes_apt_repository }} /
+  when: not ansible_check_mode
+
+- name: Install kubeadm kubelet and kubectl
+  ansible.builtin.apt:
+    update_cache: true
+    name: "{{ kubernetes_packages }}"
+    state: present
+  when: not ansible_check_mode
+  notify: Restart kubelet
+
+- name: Hold Kubernetes packages
+  ansible.builtin.dpkg_selections:
+    name: "{{ item }}"
+    selection: hold
+  loop: "{{ kubernetes_packages }}"
+  when: not ansible_check_mode
+
+- name: Generate the default containerd configuration
+  ansible.builtin.command:
+    argv:
+      - containerd
+      - config
+      - default
+  changed_when: false
+  register: containerd_default_configuration
+  when: not ansible_check_mode
+
+- name: Configure containerd for systemd cgroups
+  ansible.builtin.template:
+    src: containerd-config.toml.j2
+    dest: /etc/containerd/config.toml
+    owner: root
+    group: root
+    mode: "0644"
+  when: not ansible_check_mode
+  notify: Restart containerd
+
+- name: Apply containerd configuration now
+  ansible.builtin.meta: flush_handlers
+  when: not ansible_check_mode
+
+- name: Enable and start containerd
+  ansible.builtin.service:
+    name: "{{ containerd_service_name }}"
+    enabled: true
+    state: started
+  when: not ansible_check_mode
+
+- name: Enable kubelet
+  ansible.builtin.service:
+    name: "{{ kubelet_service_name }}"
+    enabled: true
+    state: started
+  when: not ansible_check_mode
+
+- name: Verify Kubernetes prerequisites
+  when: not ansible_check_mode
+  block:
+    - name: Verify containerd service is active
+      ansible.builtin.command:
+        argv:
+          - systemctl
+          - is-active
+          - "{{ containerd_service_name }}"
+      changed_when: false
+
+    - name: Verify kubeadm is installed
+      ansible.builtin.command:
+        argv:
+          - kubeadm
+          - version
+          - -o
+          - short
+      changed_when: false
+      register: kubeadm_version
+
+    - name: Display installed kubeadm version
+      ansible.builtin.debug:
+        msg: "{{ inventory_hostname }} uses {{ kubeadm_version.stdout }}"
