@@ -1,0 +1,215 @@
+---
+- name: Verify Helm is installed
+  ansible.builtin.command:
+    argv:
+      - helm
+      - version
+      - --short
+  changed_when: false
+  when: not ansible_check_mode
+
+- name: Add Argo Helm repository
+  ansible.builtin.command:
+    argv:
+      - helm
+      - repo
+      - add
+      - "{{ argocd_helm_repository_name }}"
+      - "{{ argocd_helm_repository }}"
+      - --force-update
+  changed_when: false
+  when: not ansible_check_mode
+
+- name: Update Helm repositories
+  ansible.builtin.command:
+    argv:
+      - helm
+      - repo
+      - update
+  changed_when: false
+  when: not ansible_check_mode
+
+- name: Create Argo CD namespace
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --kubeconfig
+      - /etc/kubernetes/admin.conf
+      - create
+      - namespace
+      - "{{ argocd_namespace }}"
+  register: argocd_namespace_creation
+  changed_when: argocd_namespace_creation.rc == 0
+  failed_when: >-
+    argocd_namespace_creation.rc != 0
+    and 'AlreadyExists' not in argocd_namespace_creation.stderr
+  when: not ansible_check_mode
+
+- name: Install Argo CD with Helm
+  ansible.builtin.command:
+    argv:
+      - helm
+      - upgrade
+      - --install
+      - "{{ argocd_release_name }}"
+      - "{{ argocd_chart_name }}"
+      - --version
+      - "{{ argocd_chart_version }}"
+      - --namespace
+      - "{{ argocd_namespace }}"
+      - --set
+      - "server.service.type={{ argocd_server_service_type }}"
+      - --set
+      - "global.hostAliases[0].ip={{ gitlab_internal_address }}"
+      - --set
+      - "global.hostAliases[0].hostnames[0]={{ gitlab_internal_hostname }}"
+      - --set
+      - "configs.ssh.extraHosts={{ argocd_gitlab_ssh_known_host }}"
+      - --wait
+      - --atomic
+      - --timeout
+      - "{{ argocd_install_timeout }}"
+  environment:
+    KUBECONFIG: /etc/kubernetes/admin.conf
+  changed_when: true
+  when: not ansible_check_mode
+
+- name: Wait for Argo CD server rollout
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --kubeconfig
+      - /etc/kubernetes/admin.conf
+      - -n
+      - "{{ argocd_namespace }}"
+      - rollout
+      - status
+      - deployment
+      - argocd-server
+      - --timeout={{ argocd_install_timeout }}
+  changed_when: false
+  when: not ansible_check_mode
+
+- name: Wait for Argo CD application controller rollout
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --kubeconfig
+      - /etc/kubernetes/admin.conf
+      - -n
+      - "{{ argocd_namespace }}"
+      - rollout
+      - status
+      - statefulset
+      - argocd-application-controller
+      - --timeout={{ argocd_install_timeout }}
+  changed_when: false
+  when: not ansible_check_mode
+
+- name: Display Argo CD pods
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --kubeconfig
+      - /etc/kubernetes/admin.conf
+      - -n
+      - "{{ argocd_namespace }}"
+      - get
+      - pods
+      - -o
+      - wide
+  changed_when: false
+  register: argocd_pods
+  when: not ansible_check_mode
+
+- name: Show Argo CD pods
+  ansible.builtin.debug:
+    var: argocd_pods.stdout_lines
+  when: not ansible_check_mode
+
+- name: Read Argo CD GitOps SSH key from HashiCorp Vault
+  ansible.builtin.set_fact:
+    vault_argocd_gitops_secret: >-
+      {{
+        lookup(
+          'community.hashi_vault.vault_kv2_get',
+          'proxmox/dev',
+          engine_mount_point='ansible',
+          url=lookup('env', 'VAULT_ADDR'),
+          token=lookup('env', 'VAULT_TOKEN')
+        )
+      }}
+  no_log: true
+  when: not ansible_check_mode
+
+- name: Set Argo CD GitOps SSH key
+  ansible.builtin.set_fact:
+    argocd_gitops_repository_ssh_private_key: >-
+      {{ vault_argocd_gitops_secret.secret.argocd_gitops_repository_ssh_private_key }}
+  no_log: true
+  when: not ansible_check_mode
+
+# - name: Render Argo CD GitLab SSH known hosts ConfigMap
+#   ansible.builtin.template:
+#     src: gitlab-ssh-known-hosts.yaml.j2
+#     dest: /etc/kubernetes/argocd-gitlab-ssh-known-hosts.yaml
+#     owner: root
+#     group: root
+#     mode: "0600"
+#   when: not ansible_check_mode
+
+# - name: Apply Argo CD GitLab SSH known hosts ConfigMap
+#   ansible.builtin.command:
+#     argv:
+#       - kubectl
+#       - --kubeconfig
+#       - /etc/kubernetes/admin.conf
+#       - apply
+#       - -f
+#       - /etc/kubernetes/argocd-gitlab-ssh-known-hosts.yaml
+#   changed_when: true
+#   when: not ansible_check_mode
+
+- name: Render Argo CD GitOps repository credentials
+  ansible.builtin.template:
+    src: gitops-repository-secret.yaml.j2
+    dest: /etc/kubernetes/argocd-gitops-repository-secret.yaml
+    owner: root
+    group: root
+    mode: "0600"
+  no_log: true
+  when: not ansible_check_mode
+
+- name: Apply Argo CD GitOps repository credentials
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --kubeconfig
+      - /etc/kubernetes/admin.conf
+      - apply
+      - -f
+      - /etc/kubernetes/argocd-gitops-repository-secret.yaml
+  changed_when: true
+  no_log: true
+  when: not ansible_check_mode
+
+- name: Render Argo CD root application manifest
+  ansible.builtin.template:
+    src: root-application.yaml.j2
+    dest: /etc/kubernetes/root-application.yaml
+    owner: root
+    group: root
+    mode: "0600"
+  when: not ansible_check_mode
+
+- name: Apply Argo CD root application
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --kubeconfig
+      - /etc/kubernetes/admin.conf
+      - apply
+      - -f
+      - /etc/kubernetes/root-application.yaml
+  changed_when: true
+  when: not ansible_check_mode

@@ -19,8 +19,6 @@ vault_login_harbor:
   stage: build
   rules:
     - *main_or_develop_rules
-  needs:
-    - job: ansible_deploy_harbor
   variables:
     VAULT_LOGIN_NAME: "Harbor"
     VAULT_ROLE_ID: "$VAULT_HARBOR_ROLE_ID"
@@ -37,7 +35,6 @@ harbor_bootstrap_secrets:
   needs:
     - job: vault_login_harbor
       artifacts: true
-
   script:
     - |
       export VAULT_TOKEN="$(cat .tmp/vault_token_harbor)"
@@ -95,6 +92,7 @@ ensure_ansible_image:
   needs:
     - job: harbor_bootstrap_secrets
       artifacts: true
+    - job: ansible_deploy_harbor
 
   script:
     - until docker info; do sleep 1; done

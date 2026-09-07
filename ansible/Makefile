@@ -18,6 +18,8 @@ KUBERNETES_CNI_TAG := kubernetes_cni
 KUBEADM_CONTROL_PLANE_JOIN_TAG := kubeadm_control_plane_join
 KUBEADM_WORKER_JOIN_TAG := kubeadm_worker_join
 KUBERNETES_CLUSTER_VALIDATION_TAG := kubernetes_cluster_validation
+ARGOCD_BOOTSTRAP_TAG := argocd_bootstrap
+LONGHORN_PREREQUISITES_TAG := longhorn_prerequisites
 
 .PHONY: help install dev prod check-dev check-prod syntax-dev syntax-prod ping-dev ping-prod lint \
 	check-harbor-dev deploy-harbor-dev \
@@ -27,7 +29,9 @@ KUBERNETES_CLUSTER_VALIDATION_TAG := kubernetes_cluster_validation
 	check-kubernetes-cni-dev deploy-kubernetes-cni-dev \
 	check-kubeadm-control-plane-join-dev deploy-kubeadm-control-plane-join-dev \
 	check-kubeadm-worker-join-dev deploy-kubeadm-worker-join-dev \
-	check-kubernetes-cluster-validation-dev deploy-kubernetes-cluster-validation-dev
+	check-kubernetes-cluster-validation-dev deploy-kubernetes-cluster-validation-dev \
+	check-argocd-bootstrap-dev deploy-argocd-bootstrap-dev \
+	check-longhorn-prerequisites-dev deploy-longhorn-prerequisites-dev
 
 help:
 	@echo "Ansible commands"
@@ -57,6 +61,10 @@ help:
 	@echo "  make deploy-kubeadm-worker-join-dev"
 	@echo "  make check-kubernetes-cluster-validation-dev"
 	@echo "  make deploy-kubernetes-cluster-validation-dev"
+	@echo "  make check-argocd-bootstrap-dev"
+	@echo "  make deploy-argocd-bootstrap-dev"
+	@echo "  make check-longhorn-prerequisites-dev"
+	@echo "  make deploy-longhorn-prerequisites-dev"
 
 install:
 	ansible-galaxy role install -r $(REQUIREMENTS)
@@ -196,4 +204,26 @@ check-kubernetes-cluster-validation-dev:
 deploy-kubernetes-cluster-validation-dev:
 	ansible-playbook -i $(DEV_INV) $(PLAYBOOK) \
 		--tags $(KUBERNETES_CLUSTER_VALIDATION_TAG) \
+		--private-key $(SSH_KEY_PATH)
+
+check-argocd-bootstrap-dev:
+	ansible-playbook -i $(DEV_INV) $(PLAYBOOK) \
+		--tags $(ARGOCD_BOOTSTRAP_TAG) \
+		--check --diff \
+		--private-key $(SSH_KEY_PATH)
+
+deploy-argocd-bootstrap-dev:
+	ansible-playbook -i $(DEV_INV) $(PLAYBOOK) \
+		--tags $(ARGOCD_BOOTSTRAP_TAG) \
+		--private-key $(SSH_KEY_PATH)
+
+check-longhorn-prerequisites-dev:
+	ansible-playbook -i $(DEV_INV) $(PLAYBOOK) \
+		--tags $(LONGHORN_PREREQUISITES_TAG) \
+		--check --diff \
+		--private-key $(SSH_KEY_PATH)
+
+deploy-longhorn-prerequisites-dev:
+	ansible-playbook -i $(DEV_INV) $(PLAYBOOK) \
+		--tags $(LONGHORN_PREREQUISITES_TAG) \
 		--private-key $(SSH_KEY_PATH)

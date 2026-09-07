@@ -3,3 +3,4 @@ collections:
   - name: community.hashi_vault
     version: "<5.0.0"
   - name: ansible.posix
+  - name: community.general

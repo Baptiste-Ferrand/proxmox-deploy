@@ -63,3 +63,19 @@
     - kubernetes_cluster_validation
   roles:
     - kubernetes_cluster_validation
+
+- name: Bootstrap Argo CD
+  hosts: argocd_bootstrap
+  become: true
+  tags:
+    - argocd_bootstrap
+  roles:
+    - argocd_bootstrap
+
+- name: Prepare Kubernetes workers for Longhorn
+  hosts: kubernetes_workers
+  become: true
+  tags:
+    - longhorn_prerequisites
+  roles:
+    - longhorn_prerequisites

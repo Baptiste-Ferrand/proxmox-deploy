@@ -110,9 +110,6 @@
   no_log: true
   when: vault_harbor_certificate is not skipped
 
-
-
-
 - name: Render harbor.yml
   ansible.builtin.template:
     src: harbor.yml.j2
@@ -148,6 +145,20 @@
     - (harbor_installed_marker.stat.exists | default(false))
     - harbor_config.changed
 
+- name: Wait for Harbor API to be ready
+  ansible.builtin.uri:
+    url: "https://127.0.0.1/api/v2.0/health"
+    method: GET
+    headers:
+      Host: "{{ harbor_hostname }}"
+    validate_certs: false
+    status_code: 200
+  register: harbor_health
+  retries: 30
+  delay: 10
+  until: harbor_health.status == 200
+  when: not ansible_check_mode
+
 - name: Ensure Harbor project exists
   ansible.builtin.uri:
     url: "https://127.0.0.1/api/v2.0/projects"
@@ -166,7 +177,7 @@
       - 201
       - 409
     validate_certs: false
-  no_log: true
+  no_log: false
   when: not ansible_check_mode
 
 - name: Mark Harbor as installed

@@ -1,0 +1,188 @@
+- name: Install Longhorn operating system prerequisites
+  ansible.builtin.apt:
+    update_cache: true
+    cache_valid_time: 3600
+    name:
+      - open-iscsi
+      - nfs-common
+    state: present
+  when: not ansible_check_mode
+
+- name: Enable and start iSCSI service
+  ansible.builtin.service:
+    name: iscsid
+    enabled: true
+    state: started
+  when: not ansible_check_mode
+
+- name: Verify iSCSI service is active
+  ansible.builtin.command:
+    argv:
+      - systemctl
+      - is-active
+      - iscsid
+  changed_when: false
+  when: not ansible_check_mode
+
+- name: Check whether the Longhorn data directory is already mounted
+  ansible.builtin.command:
+    argv:
+      - findmnt
+      - --noheadings
+      - --output
+      - SOURCE
+      - --target
+      - /var/lib/longhorn
+  changed_when: false
+  failed_when: false
+  register: longhorn_existing_mount
+  when: not ansible_check_mode
+
+- name: Identify the device backing the root filesystem
+  ansible.builtin.command:
+    argv:
+      - findmnt
+      - --noheadings
+      - --output
+      - SOURCE
+      - --target
+      - /
+  changed_when: false
+  register: longhorn_root_source
+  when:
+    - not ansible_check_mode
+    - longhorn_existing_mount.rc != 0
+
+- name: Derive the root disk device
+  ansible.builtin.set_fact:
+    longhorn_root_disk: >-
+      {{ longhorn_root_source.stdout | trim | regex_replace('p?[0-9]+$', '') }}
+  when:
+    - not ansible_check_mode
+    - longhorn_existing_mount.rc != 0
+
+- name: List available top-level block devices
+  ansible.builtin.command:
+    argv:
+      - lsblk
+      - --json
+      - --paths
+      - --nodeps
+      - --output
+      - PATH,TYPE,FSTYPE,MOUNTPOINTS
+  changed_when: false
+  register: longhorn_lsblk
+  when:
+    - not ansible_check_mode
+    - longhorn_existing_mount.rc != 0
+
+- name: Find unused Longhorn data-disk candidates
+  ansible.builtin.set_fact:
+    longhorn_data_disk_candidates: >-
+      {{
+        (longhorn_lsblk.stdout | from_json).blockdevices
+        | selectattr('type', 'equalto', 'disk')
+        | rejectattr('path', 'equalto', longhorn_root_disk)
+        | selectattr('fstype', 'equalto', none)
+        | selectattr('mountpoints', 'equalto', [none])
+        | map(attribute='path')
+        | list
+      }}
+  when:
+    - not ansible_check_mode
+    - longhorn_existing_mount.rc != 0
+
+- name: Assert that exactly one unused Longhorn data disk exists
+  ansible.builtin.assert:
+    that:
+      - longhorn_data_disk_candidates | length == 1
+    fail_msg: >-
+      Expected exactly one unused Longhorn data disk on {{ inventory_hostname }},
+      but found {{ longhorn_data_disk_candidates | length }}:
+      {{ longhorn_data_disk_candidates | join(', ') }}.
+      Refusing to select or format a disk automatically.
+  when:
+    - not ansible_check_mode
+    - longhorn_existing_mount.rc != 0
+
+- name: Select the Longhorn data disk
+  ansible.builtin.set_fact:
+    longhorn_data_device: >-
+      {{
+        longhorn_existing_mount.stdout | trim
+        if longhorn_existing_mount.rc == 0
+        else longhorn_data_disk_candidates | first
+      }}
+  when: not ansible_check_mode
+
+- name: Create ext4 filesystem on Longhorn data disk
+  community.general.filesystem:
+    dev: "{{ longhorn_data_device }}"
+    fstype: ext4
+    force: false
+  when: not ansible_check_mode
+
+- name: Read Longhorn data-disk UUID
+  ansible.builtin.command:
+    argv:
+      - blkid
+      - --match-token
+      - TYPE=ext4
+      - --output
+      - value
+      - --match-tag
+      - UUID
+      - "{{ longhorn_data_device }}"
+  changed_when: false
+  register: longhorn_data_disk_uuid
+  when: not ansible_check_mode
+
+- name: Assert that the Longhorn data disk has an ext4 UUID
+  ansible.builtin.assert:
+    that:
+      - longhorn_data_disk_uuid.stdout | trim | length > 0
+    fail_msg: >-
+      Longhorn data disk {{ longhorn_data_device }} has no ext4 UUID
+      on {{ inventory_hostname }}.
+  when: not ansible_check_mode
+
+- name: Create Longhorn data directory
+  ansible.builtin.file:
+    path: /var/lib/longhorn
+    state: directory
+    owner: root
+    group: root
+    mode: "0750"
+  when: not ansible_check_mode
+
+- name: Mount Longhorn data disk persistently
+  ansible.posix.mount:
+    path: /var/lib/longhorn
+    src: "UUID={{ longhorn_data_disk_uuid.stdout | trim }}"
+    fstype: ext4
+    opts: defaults
+    state: mounted
+  when: not ansible_check_mode
+
+- name: Verify Longhorn data disk mount
+  ansible.builtin.command:
+    argv:
+      - findmnt
+      - --target
+      - /var/lib/longhorn
+      - --noheadings
+      - --output
+      - UUID,FSTYPE
+  changed_when: false
+  register: longhorn_data_mount
+  when: not ansible_check_mode
+
+- name: Assert Longhorn data disk mount
+  ansible.builtin.assert:
+    that:
+      - longhorn_data_disk_uuid.stdout | trim in longhorn_data_mount.stdout
+      - "'ext4' in longhorn_data_mount.stdout"
+    fail_msg: >-
+      /var/lib/longhorn is not mounted from the selected Longhorn data disk
+      on {{ inventory_hostname }}.
+  when: not ansible_check_mode

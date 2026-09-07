@@ -1,0 +1,23 @@
+argocd_namespace: argocd
+argocd_release_name: argocd
+
+argocd_helm_repository_name: argo
+argocd_helm_repository: https://argoproj.github.io/argo-helm
+argocd_chart_name: argo/argo-cd
+argocd_chart_version: "8.5.2"
+
+argocd_server_service_type: ClusterIP
+argocd_install_timeout: 10m
+
+argocd_gitops_repository_name: gitops-platform
+argocd_gitops_repository_url: >-
+  ssh://git@gitlab-formation.coak.fr:22/formation/gitops-platform.git
+
+argocd_gitops_vault_mount_point: ansible
+argocd_gitops_vault_path: proxmox/dev
+argocd_gitops_vault_secret_key: argocd_gitops_repository_ssh_private_key
+argocd_gitlab_ssh_known_host: >-
+  gitlab-formation.coak.fr ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIF64HAMzUZCu8w6aAQZabKZli22cEe77g3UE5XVSLZUp root@debian12
+
+gitlab_internal_hostname: gitlab-formation.coak.fr
+gitlab_internal_address: 192.168.100.10

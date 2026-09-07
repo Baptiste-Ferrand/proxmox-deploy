@@ -330,3 +330,63 @@ ansible_deploy_kubernetes_cluster_validation:
     - export ANSIBLE_CONFIG=ansible/ansible.cfg
     - cd ansible
     - make deploy-kubernetes-cluster-validation-dev SSH_KEY_PATH="../.tmp/ci_ssh_key"
+
+ansible_check_argocd_bootstrap:
+  extends: .ansible_harbor_base
+  stage: ansible
+  rules: *main_or_develop_rules
+  needs:
+    - job: vault_login_ansible
+      artifacts: true
+    - job: ansible_bootstrap_secrets
+      artifacts: true
+    - job: ansible_deploy_kubernetes_cluster_validation
+  script:
+    - export ANSIBLE_CONFIG=ansible/ansible.cfg
+    - cd ansible
+    - make check-argocd-bootstrap-dev SSH_KEY_PATH="../.tmp/ci_ssh_key"
+
+ansible_deploy_argocd_bootstrap:
+  extends: .ansible_harbor_base
+  stage: ansible
+  rules: *main_or_develop_rules
+  needs:
+    - job: vault_login_ansible
+      artifacts: true
+    - job: ansible_bootstrap_secrets
+      artifacts: true
+    - job: ansible_check_argocd_bootstrap
+  script:
+    - export ANSIBLE_CONFIG=ansible/ansible.cfg
+    - cd ansible
+    - make deploy-argocd-bootstrap-dev SSH_KEY_PATH="../.tmp/ci_ssh_key"
+  
+ansible_check_longhorn_prerequisites:
+  extends: .ansible_harbor_base
+  stage: ansible
+  rules: *main_or_develop_rules
+  needs:
+    - job: vault_login_ansible
+      artifacts: true
+    - job: ansible_bootstrap_secrets
+      artifacts: true
+    - job: ansible_deploy_argocd_bootstrap
+  script:
+    - export ANSIBLE_CONFIG=ansible/ansible.cfg
+    - cd ansible
+    - make check-longhorn-prerequisites-dev SSH_KEY_PATH="../.tmp/ci_ssh_key"
+
+ansible_deploy_longhorn_prerequisites:
+  extends: .ansible_harbor_base
+  stage: ansible
+  rules: *main_or_develop_rules
+  needs:
+    - job: vault_login_ansible
+      artifacts: true
+    - job: ansible_bootstrap_secrets
+      artifacts: true
+    - job: ansible_check_longhorn_prerequisites
+  script:
+    - export ANSIBLE_CONFIG=ansible/ansible.cfg
+    - cd ansible
+    - make deploy-longhorn-prerequisites-dev SSH_KEY_PATH="../.tmp/ci_ssh_key"
