@@ -1,0 +1,20 @@
+[Interface]
+Address = {{ wireguard_address }}
+ListenPort = {{ wireguard_listen_port }}
+PrivateKey = {{ wireguard_server_private_key }}
+
+PostUp = iptables -A FORWARD -i %i -o {{ ansible_facts["default_ipv4"]["interface"] }} -d {{ wireguard_lan_subnet }} -j ACCEPT
+PostUp = iptables -A FORWARD -i {{ ansible_facts["default_ipv4"]["interface"] }} -o %i -s {{ wireguard_lan_subnet }} -d {{ wireguard_client_subnet }} -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+PostUp = iptables -t nat -A POSTROUTING -s {{ wireguard_client_subnet }} -d {{ wireguard_lan_subnet }} -o {{ ansible_facts["default_ipv4"]["interface"] }} -j MASQUERADE
+
+PostDown = iptables -D FORWARD -i %i -o {{ ansible_facts["default_ipv4"]["interface"] }} -d {{ wireguard_lan_subnet }} -j ACCEPT
+PostDown = iptables -D FORWARD -i {{ ansible_facts["default_ipv4"]["interface"] }} -o %i -s {{ wireguard_lan_subnet }} -d {{ wireguard_client_subnet }} -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+PostDown = iptables -t nat -D POSTROUTING -s {{ wireguard_client_subnet }} -d {{ wireguard_lan_subnet }} -o {{ ansible_facts["default_ipv4"]["interface"] }} -j MASQUERADE
+
+{% for peer in wireguard_peers %}
+# {{ peer.name }}
+[Peer]
+PublicKey = {{ peer.public_key }}
+AllowedIPs = {{ peer.allowed_ips | join(", ") }}
+
+{% endfor %}

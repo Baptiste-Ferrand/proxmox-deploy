@@ -1,0 +1,59 @@
+# ansible/inventories/dev/group_vars/vpn_gateways.yml
+wireguard_package_name: "wireguard"
+iptables_package_name: "iptables"
+
+wireguard_interface: "wg0"
+wireguard_listen_port: 51820
+wireguard_address: "10.10.10.1/24"
+wireguard_client_subnet: "10.10.10.0/24"
+wireguard_lan_subnet: "192.168.100.0/24"
+
+wireguard_peers:
+  - name: "windows-admin"
+    public_key: "{{ windows_admin_public_key }}"
+    allowed_ips:
+      - "10.10.10.2/32"
+
+# Unbound
+unbound_listen_address: "10.10.10.1"
+unbound_allowed_subnet: "10.10.10.0/24"
+
+unbound_forwarders:
+  - "1.1.1.1"
+  - "1.0.0.1"
+
+unbound_private_zone: "coak.fr"
+
+unbound_private_records:
+  - name: "gitlab"
+    address: "192.168.100.10"
+
+  - name: "gitlab-runner"
+    address: "192.168.100.20"
+
+  - name: "vault"
+    address: "192.168.100.30"
+
+  - name: "harbor-formation"
+    address: "192.168.100.40"
+
+  # - name: "backup"
+  #   address: "192.168.100.50"
+
+  - name: "vpn"
+    address: "192.168.100.60"
+
+  - name: "kubernetes-api"
+    address: "192.168.100.100"
+  
+  - name: "argocd"
+    address: "192.168.100.120"
+
+  - name: "grafana"
+    address: "192.168.100.120"
+
+  - name: "prometheus"
+    address: "192.168.100.120"
+    
+  - name: "longhorn"
+    address: "192.168.100.120"

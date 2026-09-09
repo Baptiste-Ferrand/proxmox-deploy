@@ -1,5 +1,5 @@
 .main_or_develop_rules: &main_or_develop_rules
-  - if: '$CI_COMMIT_BRANCH == "main" || $CI_COMMIT_BRANCH == "develop"'
+  - if: '$CI_COMMIT_BRANCH == "main" || $CI_COMMIT_BRANCH == "develop" || $CI_COMMIT_BRANCH == "feat/VPN"'
 
 .default_ansible_bootstrap:
   image:
@@ -390,3 +390,34 @@ ansible_deploy_longhorn_prerequisites:
     - export ANSIBLE_CONFIG=ansible/ansible.cfg
     - cd ansible
     - make deploy-longhorn-prerequisites-dev SSH_KEY_PATH="../.tmp/ci_ssh_key"
+
+ansible_check_wireguard_gateway:
+  extends: .ansible_harbor_base
+  stage: ansible
+  rules: *main_or_develop_rules
+  needs:
+    - job: vault_login_ansible
+      artifacts: true
+    - job: ansible_bootstrap_secrets
+      artifacts: true
+    - job: apply_vpn_gateway
+    - job: ensure_ansible_image
+  script:
+    - export ANSIBLE_CONFIG=ansible/ansible.cfg
+    - cd ansible
+    - make check-wireguard-gateway-dev SSH_KEY_PATH="../.tmp/ci_ssh_key"
+
+ansible_deploy_wireguard_gateway:
+  extends: .ansible_harbor_base
+  stage: ansible
+  rules: *main_or_develop_rules
+  needs:
+    - job: vault_login_ansible
+      artifacts: true
+    - job: ansible_bootstrap_secrets
+      artifacts: true
+    - job: ansible_check_wireguard_gateway
+  script:
+    - export ANSIBLE_CONFIG=ansible/ansible.cfg
+    - cd ansible
+    - make deploy-wireguard-gateway-dev SSH_KEY_PATH="../.tmp/ci_ssh_key"

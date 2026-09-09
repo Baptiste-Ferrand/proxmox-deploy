@@ -152,6 +152,30 @@
       - update
   changed_when: false
 
+- name: Install Gateway API standard CRDs
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --kubeconfig
+      - /etc/kubernetes/admin.conf
+      - apply
+      - --server-side
+      - -f
+      - "{{ item }}"
+  loop:
+    - "https://raw.githubusercontent.com/kubernetes-sigs/gateway-api/v1.6.1/config/crd/standard/gateway.networking.k8s.io_gatewayclasses.yaml"
+    - "https://raw.githubusercontent.com/kubernetes-sigs/gateway-api/v1.6.1/config/crd/standard/gateway.networking.k8s.io_gateways.yaml"
+    - "https://raw.githubusercontent.com/kubernetes-sigs/gateway-api/v1.6.1/config/crd/standard/gateway.networking.k8s.io_httproutes.yaml"
+    - "https://raw.githubusercontent.com/kubernetes-sigs/gateway-api/v1.6.1/config/crd/standard/gateway.networking.k8s.io_referencegrants.yaml"
+    - "https://raw.githubusercontent.com/kubernetes-sigs/gateway-api/v1.6.1/config/crd/standard/gateway.networking.k8s.io_grpcroutes.yaml"
+    - "https://raw.githubusercontent.com/kubernetes-sigs/gateway-api/v1.6.1/config/crd/standard/gateway.networking.k8s.io_backendtlspolicies.yaml"
+    - "https://raw.githubusercontent.com/kubernetes-sigs/gateway-api/v1.6.1/config/crd/standard/gateway.networking.k8s.io_tlsroutes.yaml"
+  register: gateway_api_crds
+  changed_when: >-
+    'created' in gateway_api_crds.stdout
+    or 'configured' in gateway_api_crds.stdout
+  when: not ansible_check_mode
+
 - name: Install Cilium with kube-proxy replacement
   ansible.builtin.command:
     argv:
@@ -172,11 +196,33 @@
       - "k8sServicePort=6443"
       - --set
       - "operator.replicas={{ cilium_operator_bootstrap_replicas }}"
+      - --set
+      - "gatewayAPI.enabled=true"
+      - --set
+      - "l2announcements.enabled=true"
+      - --set
+      - "externalIPs.enabled=true"
+      - --set
+      - "gatewayAPI.gatewayClass.create=auto"
       - --wait
       - --timeout
       - 10m
   environment:
     KUBECONFIG: /etc/kubernetes/admin.conf
+  changed_when: true
+  when: not ansible_check_mode
+
+- name: Restart Cilium DaemonSet after Gateway API activation
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --kubeconfig
+      - /etc/kubernetes/admin.conf
+      - -n
+      - kube-system
+      - rollout
+      - restart
+      - daemonset/cilium
   changed_when: true
   when: not ansible_check_mode
 
@@ -207,6 +253,35 @@
       - status
       - deployment/cilium-operator
       - --timeout=10m
+  changed_when: false
+  when: not ansible_check_mode
+
+- name: Verify Gateway API CRDs are installed
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --kubeconfig
+      - /etc/kubernetes/admin.conf
+      - get
+      - crd
+      - "{{ item }}"
+  loop:
+    - "gatewayclasses.gateway.networking.k8s.io"
+    - "gateways.gateway.networking.k8s.io"
+    - "httproutes.gateway.networking.k8s.io"
+  changed_when: false
+  when: not ansible_check_mode
+
+- name: Wait for the Cilium GatewayClass
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --kubeconfig
+      - /etc/kubernetes/admin.conf
+      - wait
+      - --for=condition=Accepted
+      - gatewayclass/cilium
+      - --timeout=5m
   changed_when: false
   when: not ansible_check_mode
 

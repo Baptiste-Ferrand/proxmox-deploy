@@ -20,6 +20,7 @@ KUBEADM_WORKER_JOIN_TAG := kubeadm_worker_join
 KUBERNETES_CLUSTER_VALIDATION_TAG := kubernetes_cluster_validation
 ARGOCD_BOOTSTRAP_TAG := argocd_bootstrap
 LONGHORN_PREREQUISITES_TAG := longhorn_prerequisites
+WIREGUARD_GATEWAY_TAG := wireguard_gateway
 
 .PHONY: help install dev prod check-dev check-prod syntax-dev syntax-prod ping-dev ping-prod lint \
 	check-harbor-dev deploy-harbor-dev \
@@ -31,7 +32,8 @@ LONGHORN_PREREQUISITES_TAG := longhorn_prerequisites
 	check-kubeadm-worker-join-dev deploy-kubeadm-worker-join-dev \
 	check-kubernetes-cluster-validation-dev deploy-kubernetes-cluster-validation-dev \
 	check-argocd-bootstrap-dev deploy-argocd-bootstrap-dev \
-	check-longhorn-prerequisites-dev deploy-longhorn-prerequisites-dev
+	check-longhorn-prerequisites-dev deploy-longhorn-prerequisites-dev \
+	check-wireguard-gateway-dev deploy-wireguard-gateway-dev
 
 help:
 	@echo "Ansible commands"
@@ -65,6 +67,8 @@ help:
 	@echo "  make deploy-argocd-bootstrap-dev"
 	@echo "  make check-longhorn-prerequisites-dev"
 	@echo "  make deploy-longhorn-prerequisites-dev"
+	@echo "  make check-wireguard-gateway-dev"
+	@echo "  make deploy-wireguard-gateway-dev"
 
 install:
 	ansible-galaxy role install -r $(REQUIREMENTS)
@@ -226,4 +230,15 @@ check-longhorn-prerequisites-dev:
 deploy-longhorn-prerequisites-dev:
 	ansible-playbook -i $(DEV_INV) $(PLAYBOOK) \
 		--tags $(LONGHORN_PREREQUISITES_TAG) \
+		--private-key $(SSH_KEY_PATH)
+
+check-wireguard-gateway-dev:
+	ansible-playbook -i $(DEV_INV) $(PLAYBOOK) \
+		--tags $(WIREGUARD_GATEWAY_TAG) \
+		--check --diff \
+		--private-key $(SSH_KEY_PATH)
+
+deploy-wireguard-gateway-dev:
+	ansible-playbook -i $(DEV_INV) $(PLAYBOOK) \
+		--tags $(WIREGUARD_GATEWAY_TAG) \
 		--private-key $(SSH_KEY_PATH)

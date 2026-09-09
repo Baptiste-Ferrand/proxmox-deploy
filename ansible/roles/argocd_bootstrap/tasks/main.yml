@@ -60,6 +60,8 @@
       - --set
       - "server.service.type={{ argocd_server_service_type }}"
       - --set
+      - 'configs.params.server\.insecure=true'
+      - --set
       - "global.hostAliases[0].ip={{ gitlab_internal_address }}"
       - --set
       - "global.hostAliases[0].hostnames[0]={{ gitlab_internal_hostname }}"

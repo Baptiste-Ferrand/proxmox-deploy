@@ -1,0 +1,131 @@
+- name: Read WireGuard secrets from HashiCorp Vault
+  ansible.builtin.set_fact:
+    vault_wireguard_secret: >-
+      {{
+        lookup(
+          'community.hashi_vault.vault_kv2_get',
+          'proxmox/dev',
+          engine_mount_point='ansible',
+          url=lookup('env', 'VAULT_ADDR'),
+          token=lookup('env', 'VAULT_TOKEN')
+        )
+      }}
+  no_log: true
+
+- name: Set WireGuard secrets
+  ansible.builtin.set_fact:
+    wireguard_server_private_key: >-
+      {{ vault_wireguard_secret.secret.wireguard_server_private_key }}
+    windows_admin_public_key: >-
+      {{ vault_wireguard_secret.secret.windows_admin_public_key }}
+  no_log: true
+  when: not ansible_check_mode
+
+
+- name: Update APT package cache
+  ansible.builtin.apt:
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: Install WireGuard, DNS, and firewall dependencies
+  ansible.builtin.apt:
+    name:
+      - "{{ wireguard_package_name }}"
+      - "{{ iptables_package_name }}"
+      - "unbound"
+      - "dnsutils"
+    state: present
+
+- name: Enable IPv4 forwarding for VPN routing
+  ansible.posix.sysctl:
+    name: net.ipv4.ip_forward
+    value: "1"
+    state: present
+    reload: true
+
+- name: Create WireGuard configuration directory
+  ansible.builtin.file:
+    path: /etc/wireguard
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+
+- name: Configure WireGuard gateway
+  ansible.builtin.template:
+    src: wg0.conf.j2
+    dest: "/etc/wireguard/{{ wireguard_interface }}.conf"
+    owner: root
+    group: root
+    mode: "0600"
+  no_log: true
+  notify: Restart WireGuard
+  when: not ansible_check_mode
+
+- name: Apply WireGuard configuration changes
+  ansible.builtin.meta: flush_handlers
+  when: not ansible_check_mode
+
+- name: Ensure WireGuard gateway is enabled and running
+  ansible.builtin.service:
+    name: "wg-quick@{{ wireguard_interface }}"
+    state: started
+    enabled: true
+  when: not ansible_check_mode
+
+- name: Verify WireGuard interface is active
+  ansible.builtin.command:
+    argv:
+      - wg
+      - show
+      - "{{ wireguard_interface }}"
+  changed_when: false
+  when: not ansible_check_mode
+
+- name: Configure private DNS zone for VPN clients
+  ansible.builtin.template:
+    src: coak-private.conf.j2
+    dest: /etc/unbound/unbound.conf.d/coak-private.conf
+    owner: root
+    group: root
+    mode: "0644"
+    validate: >-
+      {{
+        '/usr/sbin/unbound-checkconf %s'
+        if not ansible_check_mode
+        else '/usr/bin/true %s'
+      }}
+  notify: Restart Unbound
+
+- name: Apply Unbound configuration changes
+  ansible.builtin.meta: flush_handlers
+  when: not ansible_check_mode
+
+- name: Ensure Unbound is enabled and running
+  ansible.builtin.service:
+    name: unbound
+    state: started
+    enabled: true
+  when: not ansible_check_mode
+
+- name: Verify private DNS records from the VPN interface
+  ansible.builtin.command:
+    argv:
+      - dig
+      - "+short"
+      - "@{{ unbound_listen_address }}"
+      - "{{ item.name }}.{{ unbound_private_zone }}"
+  changed_when: false
+  register: unbound_private_dns_queries
+  loop: "{{ unbound_private_records }}"
+  when: not ansible_check_mode
+
+- name: Assert Unbound resolves private DNS records
+  ansible.builtin.assert:
+    that:
+      - item.stdout | trim == item.item.address
+    fail_msg: >-
+      Unbound does not resolve {{ item.item.name }}.{{ unbound_private_zone }}
+      to {{ item.item.address }}.
+  loop: "{{ unbound_private_dns_queries.results }}"
+  when: not ansible_check_mode

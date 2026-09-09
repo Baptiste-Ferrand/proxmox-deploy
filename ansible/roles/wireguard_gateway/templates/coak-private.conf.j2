@@ -1,0 +1,27 @@
+server:
+    interface: {{ unbound_listen_address }}
+    port: 53
+
+    access-control: 127.0.0.0/8 allow
+    access-control: {{ unbound_allowed_subnet }} allow
+
+    verbosity: 1
+    hide-identity: yes
+    hide-version: yes
+
+    do-ip4: yes
+    do-ip6: no
+    do-udp: yes
+    do-tcp: yes
+
+    local-zone: "{{ unbound_private_zone }}." static
+
+{% for record in unbound_private_records %}
+    local-data: "{{ record.name }}.{{ unbound_private_zone }}. IN A {{ record.address }}"
+{% endfor %}
+
+forward-zone:
+    name: "."
+{% for forwarder in unbound_forwarders %}
+    forward-addr: {{ forwarder }}
+{% endfor %}

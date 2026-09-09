@@ -7,6 +7,14 @@
     - docker
     - harbor
 
+- name: Configure WireGuard VPN gateways
+  hosts: vpn_gateways
+  become: true
+  tags:
+    - wireguard_gateway
+  roles:
+    - wireguard_gateway
+
 - name: Configure Kubernetes API Load Balancers
   hosts: kubernetes_load_balancers
   become: true

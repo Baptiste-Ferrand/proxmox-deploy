@@ -1,5 +1,5 @@
 .main_or_develop_rules: &main_or_develop_rules
-  - if: '$CI_COMMIT_BRANCH == "main" || $CI_COMMIT_BRANCH == "develop"'
+  - if: '$CI_COMMIT_BRANCH == "main" || $CI_COMMIT_BRANCH == "develop" || $CI_COMMIT_BRANCH == "feat/VPN"'
 
 .default_tf:
   image:
@@ -26,6 +26,13 @@
   TF_PLAN_FILE: "tfplan-kubernetes-load-balancers"
   TF_RESOURCE_GROUP: "terraform-kubernetes-api-load-balancers"
   TF_APPLY_ARGS: "-parallelism=1"
+
+.vpn_gateway_target: &vpn_gateway_target
+  TF_STATE_NAME: "vpn-gateway-vm"
+  TF_VARS_FILE: "vm-configs/vpn-gateway-vm.tfvars"
+  TF_PLAN_FILE: "tfplan-vpn-gateway"
+  TF_RESOURCE_GROUP: "terraform-vpn-gateway-vm"
+  TF_APPLY_ARGS: ""
 
 vault_login_terraform:
   extends: .vault_login
@@ -169,3 +176,34 @@ apply_kubernetes_api_load_balancers:
     - job: vault_login_terraform
       artifacts: true
     - job: plan_kubernetes_api_load_balancers
+
+# VPN GATEWAY VM
+validate_vpn_gateway:
+  extends: .terraform_validate
+  variables:
+    <<: *vpn_gateway_target
+  needs:
+    - job: vault_login_terraform
+      artifacts: true
+
+plan_vpn_gateway:
+  extends: .terraform_plan
+  variables:
+    <<: *vpn_gateway_target
+  rules: *main_or_develop_rules
+  resource_group: "$TF_RESOURCE_GROUP"
+  needs:
+    - job: vault_login_terraform
+      artifacts: true
+    - job: validate_vpn_gateway
+
+apply_vpn_gateway:
+  extends: .terraform_apply
+  variables:
+    <<: *vpn_gateway_target
+  rules: *main_or_develop_rules
+  resource_group: "$TF_RESOURCE_GROUP"
+  needs:
+    - job: vault_login_terraform
+      artifacts: true
+    - job: plan_vpn_gateway

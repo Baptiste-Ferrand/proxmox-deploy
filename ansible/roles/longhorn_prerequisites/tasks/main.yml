@@ -28,11 +28,11 @@
   ansible.builtin.command:
     argv:
       - findmnt
+      - --mountpoint
+      - /var/lib/longhorn
       - --noheadings
       - --output
       - SOURCE
-      - --target
-      - /var/lib/longhorn
   changed_when: false
   failed_when: false
   register: longhorn_existing_mount
@@ -168,7 +168,7 @@
   ansible.builtin.command:
     argv:
       - findmnt
-      - --target
+      - --mountpoint
       - /var/lib/longhorn
       - --noheadings
       - --output
